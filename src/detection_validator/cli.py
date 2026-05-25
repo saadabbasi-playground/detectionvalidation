@@ -652,6 +652,129 @@ def map(
     )
 
 
+@main.command()
+@click.option("--input", "-i", "input_file", default="-",
+              help="JSONL file of CanonicalDetection objects (from dv ingest/map). - for stdin.")
+@click.option("--output", "-o", default="-",
+              help="Output JSONL file path (- for stdout).")
+@click.option("--sources", default="attack,cve,severity", show_default=True,
+              help="Comma-separated enrichment passes to run: attack, cve, severity.")
+def enrich(input_file: str, output: str, sources: str) -> None:
+    """Fill missing metadata on CanonicalDetection objects.
+
+    Three enrichment passes (each independently skippable via --sources):
+
+    \b
+      attack   Fill technique names, URLs, and tactics from the local ATT&CK KB.
+      cve      Create CVEReference entries from cve.YYYY.NNNNN tags and fill
+               .cvss_score / .description from NVD/KEV/EPSS caches.
+      severity Derive severity from the highest CVSS score across all linked CVEs
+               (only applied when severity is still at the default MED).
+
+    Input/output is CanonicalDetection JSONL — same schema as dv ingest / dv map.
+
+    \b
+    Workflow:
+      dv ingest detections/ | dv map -i - | dv enrich > enriched.jsonl
+      dv ingest detections/ -o canonical.jsonl
+      dv map -i canonical.jsonl -o mapped.jsonl
+      dv enrich -i mapped.jsonl -o enriched.jsonl
+
+    \b
+    Skip individual passes:
+      dv enrich -i mapped.jsonl --sources attack         # technique names only
+      dv enrich -i mapped.jsonl --sources cve,severity   # skip ATT&CK pass
+    """
+    from detection_validator.normalizer.schema import CanonicalDetection
+    from detection_validator.enricher.engine import enrich_detection
+
+    source_set = {s.strip().lower() for s in sources.split(",") if s.strip()}
+    valid = {"attack", "cve", "severity"}
+    unknown = source_set - valid
+    if unknown:
+        err_console.print(f"[red]Unknown sources: {', '.join(sorted(unknown))}[/]  valid: {', '.join(sorted(valid))}")
+        raise SystemExit(1)
+
+    # Load knowledge bases once up front
+    attack_kb = None
+    cve_kb = None
+
+    if "attack" in source_set:
+        try:
+            from detection_validator.mappers.attack_mapper import AttackKnowledgeBase
+            attack_kb = AttackKnowledgeBase()
+            attack_kb.ensure_loaded()
+            err_console.print(f"[cyan]ATT&CK KB loaded:[/] {len(attack_kb._techniques)} techniques")
+        except Exception as exc:
+            err_console.print(f"[yellow]⚠ Could not load ATT&CK KB: {exc} — skipping attack pass[/]")
+
+    if "cve" in source_set:
+        try:
+            from detection_validator.mappers.cve_mapper import CVEKnowledgeBase
+            cve_kb = CVEKnowledgeBase()
+            err_console.print("[cyan]CVE KB ready[/]")
+        except Exception as exc:
+            err_console.print(f"[yellow]⚠ Could not load CVE KB: {exc} — skipping cve pass[/]")
+
+    in_fh = open(input_file, encoding="utf-8") if input_file != "-" else sys.stdin
+    out_fh = open(output, "w", encoding="utf-8") if output != "-" else sys.stdout
+
+    total = errors = 0
+    total_techniques = total_cve_added = total_cve_enriched = total_severity = total_warnings = 0
+
+    try:
+        for line in in_fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                detection = CanonicalDetection.model_validate_json(line)
+            except Exception as exc:
+                err_console.print(f"[red]Parse error:[/] {exc}")
+                errors += 1
+                continue
+
+            result = enrich_detection(
+                detection,
+                attack_kb=attack_kb,
+                cve_kb=cve_kb,
+                sources=source_set,
+            )
+
+            total_techniques += result.techniques_enriched
+            total_cve_added += result.cve_refs_added
+            total_cve_enriched += result.cve_refs_enriched
+            total_severity += int(result.severity_updated)
+            total_warnings += len(result.warnings)
+
+            for w in result.warnings:
+                err_console.print(f"[yellow]  ⚠[/] {detection.name}: {w}")
+
+            if result.changed:
+                err_console.print(f"[green]✓[/] {detection.name}")
+            else:
+                err_console.print(f"  [dim]–[/] {detection.name}  (no changes)")
+
+            print(detection.model_dump_json(), file=out_fh)
+            total += 1
+
+    finally:
+        if input_file != "-":
+            in_fh.close()
+        if output != "-":
+            out_fh.close()
+
+    err_console.print(
+        f"\n[bold]Enriched:[/] {total} detections  "
+        f"[green]+{total_techniques} technique names[/]  "
+        f"[green]+{total_cve_added} CVE refs[/]  "
+        f"[green]+{total_cve_enriched} CVE details[/]  "
+        f"[green]{total_severity} severity updates[/]  "
+        f"[yellow]warnings: {total_warnings}[/]  "
+        f"[red]errors: {errors}[/]"
+    )
+
+
 @main.command("cve-coverage")
 @click.option("--cve", "cve_ids", required=True,
               help="Comma-separated CVE IDs to analyze, e.g. CVE-2021-44228,CVE-2022-30190.")

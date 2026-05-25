@@ -416,9 +416,12 @@ dv ingest examples/detections/ -o canonical.jsonl
 # Step 3 — map rules to ATT&CK techniques
 dv map -i canonical.jsonl -o mapped.jsonl --mode hybrid
 
-# Step 4 — analyze coverage for a CVE
+# Step 4 — enrich with technique names, CVE metadata, and severity
+dv enrich -i mapped.jsonl -o enriched.jsonl
+
+# Step 5 — analyze coverage for a CVE
 dv cve-coverage --cve CVE-2021-44228,CVE-2021-34527,CVE-2021-26855 \
-  --detections mapped.jsonl
+  --detections enriched.jsonl
 ```
 
 Sample output:
@@ -449,7 +452,7 @@ tags:
     - cve.2021.44228        # links this rule to the CVE in coverage reports
 ```
 
-Then re-run `ingest → map → cve-coverage` to confirm the gap closes.
+Then re-run `ingest → map → enrich → cve-coverage` to confirm the gap closes.
 
 ---
 
@@ -458,7 +461,7 @@ Then re-run `ingest → map → cve-coverage` to confirm the gap closes.
 Visualize which techniques your detections cover:
 
 ```bash
-dv navigator -d mapped.jsonl -o coverage-layer.json
+dv navigator -d enriched.jsonl -o coverage-layer.json
 # Open https://mitre-attack.github.io/attack-navigator/
 # → Open Existing Layer → Upload from local → select coverage-layer.json
 ```
@@ -492,6 +495,7 @@ Ready-to-use rules under `examples/detections/`:
 │  dv report       — render results as CLI / SARIF / HTML        │
 │  dv ingest       — parse Sigma/Splunk/KQL/YARA/EQL to JSONL    │
 │  dv map          — map rules to ATT&CK techniques              │
+│  dv enrich       — fill technique names, CVE metadata, severity│
 │  dv cve-coverage — analyze coverage gaps per CVE               │
 │  dv navigator    — export ATT&CK Navigator layer               │
 └──────────────────────────────────────────────────────────────────┘

@@ -35,6 +35,7 @@ dv match --events events.jsonl examples/detections/sigma/ --since 0 --format jso
 | `dv report` | Render results as CLI summary / SARIF / HTML |
 | `dv ingest` | Parse Sigma/Splunk/KQL/YARA/EQL rules to canonical JSONL |
 | `dv map` | Map parsed rules to ATT&CK techniques |
+| `dv enrich` | Fill technique names, CVE metadata, and severity from ATT&CK/NVD caches |
 | `dv cve-coverage` | Analyze detection coverage gaps per CVE |
 | `dv navigator` | Export ATT&CK Navigator layer from detection corpus |
 | `dv intel update` | Refresh local ATT&CK, CVE, EPSS, KEV caches |
@@ -67,6 +68,45 @@ dv validate detections/ --format json | dv report                           # CL
 dv match --events events.jsonl detections/ --format json | dv report        # same, offline
 dv validate detections/ --format json | dv report --format html -o r.html   # HTML
 dv validate detections/ --format json | dv report --format sarif -o s.sarif # SARIF
+```
+
+## Detection pipeline
+
+The offline analysis pipeline processes detection rules in stages:
+
+```
+dv ingest detections/   →  canonical.jsonl   (parse rules into a unified schema)
+dv map -i canonical.jsonl   →  mapped.jsonl  (validate/infer ATT&CK technique IDs)
+dv enrich -i mapped.jsonl   →  enriched.jsonl (fill names, CVE metadata, severity)
+dv navigator -d enriched.jsonl → layer.json  (ATT&CK Navigator coverage layer)
+```
+
+### dv enrich
+
+`dv enrich` runs three independent passes over a CanonicalDetection JSONL file:
+
+| Pass | What it fills |
+|---|---|
+| `attack` | technique `.name`, `.url`, `.tactic` from local ATT&CK knowledge base |
+| `cve` | create `CVEReference` entries from `cve.YYYY.NNNNN` tags; fill `.cvss_score` / `.description` from NVD/KEV/EPSS |
+| `severity` | derive `.severity` from the highest CVSS score (only when still at default `MED`) |
+
+```bash
+# Full pipeline
+dv ingest detections/ | dv map -i - | dv enrich > enriched.jsonl
+
+# Skip the ATT&CK pass (CVE and severity only)
+dv enrich -i mapped.jsonl --sources cve,severity -o enriched.jsonl
+
+# Populate technique names only
+dv enrich -i mapped.jsonl --sources attack -o enriched.jsonl
+```
+
+The ATT&CK and CVE knowledge bases must be populated first:
+
+```bash
+dv intel update --source attack
+dv intel update --source cve --cve CVE-2021-44228,CVE-2021-34527,CVE-2021-26855
 ```
 
 ## Sections

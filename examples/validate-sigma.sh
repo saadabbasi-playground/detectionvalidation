@@ -43,9 +43,10 @@ echo ""
 echo "=== Step 5: CVE coverage analysis ==="
 dv ingest "$RULES_DIR" -o /tmp/canonical.jsonl
 dv map -i /tmp/canonical.jsonl -o /tmp/mapped.jsonl --mode hybrid
+dv enrich -i /tmp/mapped.jsonl -o /tmp/enriched.jsonl
 dv cve-coverage \
   --cve CVE-2021-44228,CVE-2021-34527,CVE-2021-26855 \
-  --detections /tmp/mapped.jsonl
+  --detections /tmp/enriched.jsonl
 
 echo ""
 echo "Done."
