@@ -349,6 +349,254 @@ def report(results_file: str, fmt: str, output: str) -> None:
 
 
 @main.command()
+@click.option("--fix", is_flag=True, default=False,
+              help="Attempt to automatically fix problems where possible.")
+def doctor(fix: bool) -> None:
+    """Check that your environment is ready to run detection-validator.
+
+    Verifies tool versions, Docker/Vagrant state, running containers,
+    victim agent reachability, and local intelligence caches.
+
+    \b
+    Run this before your first use or when something isn't working:
+      dv doctor
+      dv doctor --fix   # auto-populate empty caches
+    """
+    import os
+    import shutil
+    import subprocess
+    import sys as _sys
+    import ssl
+    import urllib.request
+    import urllib.error
+    from pathlib import Path as _Path
+
+    checks: list[tuple[str, str, str]] = []   # (icon, label, detail)
+    errors = warnings = 0
+
+    def ok(label: str, detail: str = "") -> None:
+        checks.append(("✓", label, detail))
+
+    def warn(label: str, detail: str = "") -> None:
+        nonlocal warnings
+        warnings += 1
+        checks.append(("⚠", label, detail))
+
+    def fail(label: str, detail: str = "") -> None:
+        nonlocal errors
+        errors += 1
+        checks.append(("✗", label, detail))
+
+    def run(*args: str) -> tuple[int, str]:
+        try:
+            r = subprocess.run(list(args), capture_output=True, text=True, timeout=10)
+            return r.returncode, (r.stdout + r.stderr).strip()
+        except FileNotFoundError:
+            return 127, "not found"
+        except Exception as exc:
+            return 1, str(exc)
+
+    def http_get(url: str, timeout: int = 4, verify_ssl: bool = True) -> tuple[int, str]:
+        try:
+            ctx = None
+            if not verify_ssl:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            with urllib.request.urlopen(url, context=ctx, timeout=timeout) as resp:
+                return resp.status, ""
+        except urllib.error.HTTPError as exc:
+            return exc.code, str(exc)
+        except Exception as exc:
+            return 0, str(exc)
+
+    console.print("\n[bold]dv doctor[/] — environment pre-flight check\n")
+
+    # ── Python ────────────────────────────────────────────────────────────────
+    vi = _sys.version_info
+    ver_str = f"{vi.major}.{vi.minor}.{vi.micro}"
+    if vi >= (3, 12):
+        ok(f"Python {ver_str}")
+    else:
+        fail(f"Python {ver_str}", "requires >= 3.12")
+
+    # ── uv ───────────────────────────────────────────────────────────────────
+    rc, out = run("uv", "--version")
+    if rc == 0:
+        ok(f"uv {out.split()[1] if len(out.split()) > 1 else out}")
+    else:
+        warn("uv not found", "install from https://docs.astral.sh/uv/")
+
+    # ── Docker ────────────────────────────────────────────────────────────────
+    rc, out = run("docker", "--version")
+    if rc != 0:
+        fail("Docker not found", "install Docker 24+")
+    else:
+        # extract version number
+        ver = out.split("version ")[-1].split(",")[0].strip() if "version" in out else out
+        major = int(ver.split(".")[0]) if ver[0].isdigit() else 0
+        if major < 24:
+            warn(f"Docker {ver}", "version 24+ recommended")
+        else:
+            ok(f"Docker {ver}")
+
+        # daemon running?
+        rc2, _ = run("docker", "info")
+        if rc2 != 0:
+            fail("Docker daemon not running", "start Docker Desktop or systemctl start docker")
+        else:
+            ok("Docker daemon running")
+
+        # detectval-lab network
+        rc3, nets = run("docker", "network", "ls", "--format", "{{.Name}}")
+        if "detectval-lab" in nets.splitlines():
+            ok("Docker network detectval-lab")
+        else:
+            warn("Docker network detectval-lab missing",
+                 "run: ./dv up lab --siem opensearch --profile tiny")
+
+    # ── Vagrant ───────────────────────────────────────────────────────────────
+    rc, out = run("vagrant", "--version")
+    if rc != 0:
+        warn("Vagrant not found", "install Vagrant + vagrant-qemu for real auditd telemetry")
+    else:
+        ver = out.split()[-1] if out else "?"
+        ok(f"Vagrant {ver}")
+
+        # vagrant-qemu plugin
+        rc2, plugins = run("vagrant", "plugin", "list")
+        if "vagrant-qemu" in plugins:
+            ok("Vagrant plugin vagrant-qemu")
+        else:
+            warn("vagrant-qemu plugin missing", "run: vagrant plugin install vagrant-qemu")
+
+        # VM status — only meaningful inside the vagrant dir
+        vagrant_dir = _Path(__file__).parents[2] / "vagrant"
+        if vagrant_dir.exists():
+            rc3, status = run("vagrant", "status", "--machine-readable")
+            if "running" in status:
+                ok("Vagrant VM running")
+            else:
+                warn("Vagrant VM not running", "run: cd vagrant && vagrant up")
+        else:
+            warn("vagrant/ directory not found", "expected at project root")
+
+    # ── SIEM containers ───────────────────────────────────────────────────────
+    os_pass = os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "")
+    if not os_pass:
+        warn("OPENSEARCH_INITIAL_ADMIN_PASSWORD not set",
+             "export OPENSEARCH_INITIAL_ADMIN_PASSWORD=<your-password>")
+    else:
+        ok("OPENSEARCH_INITIAL_ADMIN_PASSWORD set")
+
+    # OpenSearch
+    import base64 as _b64
+    creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode() if os_pass else ""
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(
+            "https://localhost:9200",
+            headers={"Authorization": f"Basic {creds}"} if creds else {},
+        )
+        with urllib.request.urlopen(req, context=ctx, timeout=4) as resp:
+            ok(f"OpenSearch reachable (HTTP {resp.status})")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            warn("OpenSearch reachable but auth failed",
+                 "check OPENSEARCH_INITIAL_ADMIN_PASSWORD")
+        else:
+            fail(f"OpenSearch HTTP {exc.code}", "run: ./dv up lab --siem opensearch")
+    except Exception as exc:
+        fail("OpenSearch not reachable", "run: ./dv up lab --siem opensearch --profile tiny")
+
+    # Splunk mock
+    code, detail = http_get("http://localhost:8000", timeout=3)
+    if code in range(200, 400):
+        ok(f"Splunk mock reachable (HTTP {code})")
+    elif code == 0:
+        warn("Splunk mock not reachable", "run: ./dv up lab --siem splunk")
+    else:
+        warn(f"Splunk mock HTTP {code}", detail[:80])
+
+    # ── Victim agent ─────────────────────────────────────────────────────────
+    for port, label in [("9098", "Vagrant"), ("9099", "Docker")]:
+        code, detail = http_get(f"http://localhost:{port}/health", timeout=3)
+        if code in range(200, 400):
+            ok(f"Victim agent reachable on port {port} ({label})")
+            break
+    else:
+        warn("Victim agent not reachable on 9098 or 9099",
+             "start VM: cd vagrant && vagrant up  OR  ./dv up lab")
+
+    # ── Intelligence caches ───────────────────────────────────────────────────
+    try:
+        from detection_validator.mappers.attack_mapper import AttackKnowledgeBase
+        kb = AttackKnowledgeBase()
+        if kb._is_cache_valid():
+            kb.ensure_loaded()
+            ok(f"ATT&CK KB: {len(kb._techniques)} techniques")
+        else:
+            msg = "run: dv intel update --source attack"
+            if fix:
+                warn("ATT&CK cache empty — downloading…", "")
+                try:
+                    kb.ensure_loaded(force_refresh=True)
+                    ok(f"ATT&CK KB: {len(kb._techniques)} techniques (just downloaded)")
+                except Exception as exc:
+                    fail("ATT&CK cache download failed", str(exc)[:80])
+            else:
+                warn("ATT&CK cache empty or stale", msg)
+    except Exception as exc:
+        warn("ATT&CK KB unavailable", str(exc)[:80])
+
+    try:
+        from detection_validator.mappers.cve_mapper import CVEKnowledgeBase, _DEFAULT_CACHE_DIR as _CVE_CACHE
+        kev_file = _CVE_CACHE / "kev.json"
+        if kev_file.exists():
+            import json as _json
+            kev = _json.loads(kev_file.read_text(encoding="utf-8"))
+            count = len(kev.get("vulnerabilities", kev)) if isinstance(kev, dict) else len(kev)
+            ok(f"KEV cache: {count} entries")
+        else:
+            msg = "run: dv intel update --source cve"
+            if fix:
+                warn("KEV cache empty — downloading…", "")
+                try:
+                    kb2 = CVEKnowledgeBase()
+                    kb2.update(force=True)
+                    ok("KEV cache downloaded")
+                except Exception as exc:
+                    fail("KEV cache download failed", str(exc)[:80])
+            else:
+                warn("KEV cache empty", msg)
+    except Exception as exc:
+        warn("CVE KB unavailable", str(exc)[:80])
+
+    # ── Print results ─────────────────────────────────────────────────────────
+    console.print()
+    for icon, label, detail in checks:
+        style = {"✓": "green", "⚠": "yellow", "✗": "red"}[icon]
+        detail_str = f"  [dim]{detail}[/]" if detail else ""
+        console.print(f"  [{style}]{icon}[/] {label}{detail_str}")
+
+    console.print()
+    if errors == 0 and warnings == 0:
+        console.print("[bold green]All checks passed.[/]")
+    elif errors == 0:
+        console.print(
+            f"[bold yellow]{warnings} warning(s)[/] — environment usable but not fully configured."
+        )
+    else:
+        console.print(
+            f"[bold red]{errors} error(s)[/]  [yellow]{warnings} warning(s)[/]"
+            " — fix errors before running dv attack / dv validate."
+        )
+        raise SystemExit(1)
+
+
+@main.command()
 @click.argument("source_siem")
 @click.argument("target_siem")
 @click.option("--rules", default=".", help="Path to rules directory.")
