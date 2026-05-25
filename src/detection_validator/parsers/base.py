@@ -185,11 +185,13 @@ def techniques_to_models(
 
 
 def cves_to_models(cve_ids: list[str], confidence: float = 0.9) -> list[CVEReference]:
-    """Convert a list of CVE ID strings to ``CVEReference`` models."""
+    """Convert a list of CVE ID strings to ``CVEReference`` models, deduplicating."""
+    seen: set[str] = set()
     out: list[CVEReference] = []
     for raw in cve_ids:
         canon = normalise_cve_id(raw)
-        if canon:
+        if canon and canon not in seen:
+            seen.add(canon)
             out.append(CVEReference(cve_id=canon, confidence=confidence))
     return out
 

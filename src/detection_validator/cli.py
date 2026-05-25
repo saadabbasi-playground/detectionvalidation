@@ -597,58 +597,715 @@ def doctor(fix: bool) -> None:
 
 
 @main.command()
-@click.argument("source_siem")
-@click.argument("target_siem")
-@click.option("--rules", default=".", help="Path to rules directory.")
-def migrate(source_siem: str, target_siem: str, rules: str) -> None:
-    """Translate detection rules from one SIEM format to another."""
-    console.print(f"[cyan]Migrating:[/] {source_siem} → {target_siem}  rules={rules}")
-    console.print("[yellow]TODO: implement migration pipeline[/]")
+@click.argument("source_fmt")
+@click.argument("target_fmt")
+@click.option("--rules", default=".", show_default=True,
+              help="Path to rules file or directory.")
+@click.option("--output", "-o", default="-",
+              help="Output file path (- for stdout).")
+def migrate(source_fmt: str, target_fmt: str, rules: str, output: str) -> None:
+    """Translate detection rules between formats.
+
+    Reads rules in SOURCE_FMT, converts each to a CanonicalDetection, then
+    serializes them to TARGET_FMT.
+
+    \b
+    Supported formats: sigma, splunk, kql
+    Examples:
+      dv migrate sigma splunk --rules detections/ -o splunk_searches.conf
+      dv migrate sigma kql --rules rule.yml
+    """
+    from detection_validator.parsers.registry import ParserRegistry
+    from detection_validator.parsers.base import ParseError
+    from pathlib import Path as _Path
+
+    _SUPPORTED = {"sigma", "splunk", "kql"}
+    for fmt_name, fmt_val in [("SOURCE_FMT", source_fmt), ("TARGET_FMT", target_fmt)]:
+        if fmt_val.lower() not in _SUPPORTED:
+            err_console.print(f"[red]{fmt_name} '{fmt_val}' not supported.[/]  Choose from: {', '.join(sorted(_SUPPORTED))}")
+            raise SystemExit(1)
+
+    registry = ParserRegistry()
+    root = _Path(rules)
+    files = [root] if root.is_file() else sorted(f for f in root.rglob("*") if f.is_file())
+
+    detections = []
+    for fp in files:
+        try:
+            parser = registry.find_parser(fp)
+            if parser is None:
+                continue
+            detections.append(parser.parse_file(fp))
+        except (ParseError, Exception) as exc:
+            err_console.print(f"[yellow]⚠[/] {fp.name}: {exc}")
+
+    if not detections:
+        err_console.print(f"[red]No parseable rules found in:[/] {rules}")
+        raise SystemExit(1)
+
+    target = target_fmt.lower()
+    out_fh = open(output, "w", encoding="utf-8") if output != "-" else sys.stdout
+    total = 0
+    try:
+        for det in detections:
+            techs = [t.full_id for t in det.mitre_techniques]
+            tactics = list(dict.fromkeys(
+                t.tactic for t in det.mitre_techniques if t.tactic and t.tactic != "unknown"
+            ))
+            sev_map = {"info": "informational", "low": "low", "med": "medium",
+                       "high": "high", "critical": "critical"}
+            sev = sev_map.get(det.severity.value, "medium")
+            cve_refs = [r.cve_id for r in det.cve_references]
+
+            if target == "sigma":
+                import yaml as _yaml
+                tags = [f"attack.{t.lower()}" for t in tactics]
+                tags += [f"attack.{t.lower()}" for t in techs]
+                tags += [f"cve.{c.split('-')[1]}.{c.split('-')[2]}" for c in cve_refs]
+                logic = det.detection_logic
+                detection_section = {}
+                if logic and logic.raw and logic.language == "sigma":
+                    try:
+                        parsed = _yaml.safe_load(logic.raw)
+                        detection_section = parsed.get("detection", {}) if parsed else {}
+                    except Exception:
+                        pass
+                if not detection_section:
+                    if techs:
+                        detection_section = {
+                            "selection": {"technique|contains": techs},
+                            "condition": "selection",
+                        }
+                    else:
+                        detection_section = {"keywords": [det.name], "condition": "keywords"}
+                rule = {
+                    "title": det.name,
+                    "id": str(det.id),
+                    "status": "test",
+                    "description": det.description or det.name,
+                    "tags": tags,
+                    "logsource": {"product": "linux", "service": "auditd"},
+                    "detection": detection_section,
+                    "falsepositives": det.false_positive_notes or ["Unknown"],
+                    "level": sev,
+                }
+                print(_yaml.dump(rule, allow_unicode=True, sort_keys=False).rstrip(), file=out_fh)
+                print("---", file=out_fh)
+
+            elif target == "splunk":
+                tech_filter = " OR ".join(f'technique="{t}"' for t in techs) if techs else "index=dv-telemetry"
+                sev_num = {"critical": "1", "high": "2", "medium": "3", "low": "4"}.get(sev, "3")
+                spl = (
+                    f"[{det.name}]\n"
+                    f"search = index=dv-telemetry ({tech_filter})"
+                    f' | eval detection="{det.name}"'
+                    f" | table _time, technique, key, exe, uid, cmd_output\n"
+                    f"alert.severity = {sev_num}\n"
+                    f"description = {det.description or det.name}\n"
+                )
+                print(spl, file=out_fh)
+
+            elif target == "kql":
+                if techs:
+                    tech_filter = " or ".join(f'technique: "{t}"' for t in techs)
+                    kql = f"// {det.name}\n{tech_filter}\n"
+                else:
+                    kql = f"// {det.name}\n* | where isnotempty(technique)\n"
+                print(kql, file=out_fh)
+
+            total += 1
+            err_console.print(f"[green]✓[/] {det.name}")
+
+    finally:
+        if output != "-":
+            out_fh.close()
+
+    err_console.print(f"\n[bold]Migrated:[/] {total} rule(s)  {source_fmt} → {target_fmt}")
+
+
+@main.group()
+def siem() -> None:
+    """Manage and query SIEM backend connections."""
+
+
+@siem.command("status")
+@click.option("--type", "siem_type", default="opensearch", show_default=True,
+              type=click.Choice(["opensearch", "splunk"]))
+def siem_status(siem_type: str) -> None:
+    """Check connectivity to a SIEM backend and report index stats.
+
+    \b
+    Examples:
+      dv siem status
+      dv siem status --type splunk
+    """
+    import base64 as _b64
+    import json as _json
+    import os as _os
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    if siem_type == "opensearch":
+        os_pass = _os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "")
+        if not os_pass:
+            err_console.print("[yellow]⚠ OPENSEARCH_INITIAL_ADMIN_PASSWORD not set — auth may fail[/]")
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode()
+        headers = {"Authorization": f"Basic {creds}"}
+        base = "https://localhost:9200"
+        try:
+            req = urllib.request.Request(base, headers=headers)
+            with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
+                info = _json.loads(resp.read())
+            version = info.get("version", {}).get("number", "?")
+            console.print(f"[green]✓[/] OpenSearch [bold]{version}[/]  at {base}")
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                err_console.print(f"[yellow]⚠[/] OpenSearch reachable but auth failed (HTTP {exc.code}) — check OPENSEARCH_INITIAL_ADMIN_PASSWORD")
+            else:
+                err_console.print(f"[red]✗[/] OpenSearch HTTP {exc.code}")
+            return
+        except Exception as exc:
+            err_console.print(f"[red]✗[/] OpenSearch not reachable: {exc}")
+            return
+
+        for index in ("dv-telemetry-*", ".opendistro-alerting-alert*"):
+            try:
+                req2 = urllib.request.Request(f"{base}/{index}/_count", headers=headers)
+                with urllib.request.urlopen(req2, context=ctx, timeout=5) as resp2:
+                    n = _json.loads(resp2.read()).get("count", 0)
+                console.print(f"  [cyan]{index}[/]: {n:,} documents")
+            except Exception:
+                console.print(f"  [dim]{index}: (unavailable)[/]")
+
+    elif siem_type == "splunk":
+        try:
+            req = urllib.request.Request("http://localhost:8000")
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                console.print(f"[green]✓[/] Splunk mock UI reachable (HTTP {resp.status}) at http://localhost:8000")
+        except Exception as exc:
+            err_console.print(f"[red]✗[/] Splunk not reachable: {exc}")
+            return
+        console.print(f"  HEC endpoint: http://localhost:8088/services/collector")
+
+
+@siem.command("test")
+@click.option("--type", "siem_type", default="opensearch", show_default=True,
+              type=click.Choice(["opensearch", "splunk"]))
+@click.option("--index", default="dv-telemetry-*", show_default=True)
+@click.option("--size", default=3, show_default=True, help="Number of sample events to show.")
+def siem_test(siem_type: str, index: str, size: int) -> None:
+    """Run a test query and show sample events from the SIEM.
+
+    \b
+    Examples:
+      dv siem test
+      dv siem test --type opensearch --size 5
+    """
+    import base64 as _b64
+    import json as _json
+    import os as _os
+    import ssl
+    import urllib.request
+
+    if siem_type == "opensearch":
+        os_pass = _os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "")
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode()
+        query = _json.dumps({
+            "size": size,
+            "sort": [{"timestamp": {"order": "desc"}}],
+            "query": {"match_all": {}},
+            "_source": ["timestamp", "technique", "key", "exe", "uid", "cmd_output"],
+        }).encode()
+        req = urllib.request.Request(
+            f"https://localhost:9200/{index}/_search",
+            data=query,
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Basic {creds}"},
+        )
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=8) as resp:
+                data = _json.loads(resp.read())
+        except Exception as exc:
+            err_console.print(f"[red]✗[/] Query failed: {exc}")
+            return
+        hits = data.get("hits", {}).get("hits", [])
+        total = data.get("hits", {}).get("total", {}).get("value", 0)
+        console.print(f"[green]✓[/] {total:,} documents in [cyan]{index}[/]  (showing {len(hits)})\n")
+        for h in hits:
+            s = h["_source"]
+            out = str(s.get("cmd_output", ""))[:80].replace("\n", " ")
+            console.print(
+                f"  [green]{s.get('technique','?'):12s}[/]  "
+                f"[cyan]{s.get('key','?'):20s}[/]  "
+                f"exe={s.get('exe','?'):30s}  uid={s.get('uid','?')}"
+            )
+            if out:
+                console.print(f"    [dim]{out}[/]")
+    else:
+        err_console.print(f"[yellow]Test query not implemented for {siem_type}[/]")
+
+
+@main.group()
+def agent() -> None:
+    """Manage and inspect remote telemetry agents."""
+
+
+@agent.command("status")
+@click.option("--port", default="9098", show_default=True,
+              help="Victim agent HTTP port.")
+def agent_status(port: str) -> None:
+    """Check victim agent health and report capabilities.
+
+    \b
+    Examples:
+      dv agent status
+      dv agent status --port 9099
+    """
+    import json as _json
+    import urllib.request
+
+    for p in ([port] if port else ["9098", "9099"]):
+        url = f"http://localhost:{p}/health"
+        try:
+            with urllib.request.urlopen(url, timeout=4) as resp:
+                body = _json.loads(resp.read()) if resp.status == 200 else {}
+            console.print(f"[green]✓[/] Victim agent reachable at http://localhost:{p}/health")
+            if body:
+                for k, v in body.items():
+                    console.print(f"  [cyan]{k}[/]: {v}")
+            return
+        except Exception:
+            continue
+    err_console.print(f"[red]✗[/] Victim agent not reachable on port {port}")
+    err_console.print("  Start the Vagrant VM:  [cyan]cd vagrant && vagrant up[/]")
+
+
+@agent.command("logs")
+@click.option("--port", default="9098", show_default=True)
+@click.option("--since", default=1.0, show_default=True,
+              help="Show events from the last N hours.")
+@click.option("--limit", default=20, show_default=True)
+def agent_logs(port: str, since: float, limit: int) -> None:
+    """Fetch recent audit events from the victim agent.
+
+    \b
+    Examples:
+      dv agent logs
+      dv agent logs --since 0.5 --limit 50
+    """
+    import json as _json
+    import urllib.request
+    import urllib.error
+    import urllib.parse
+
+    params = urllib.parse.urlencode({"since": since, "limit": limit})
+    url = f"http://localhost:{port}/events?{params}"
+    try:
+        with urllib.request.urlopen(url, timeout=8) as resp:
+            events = _json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            err_console.print(f"[yellow]⚠[/] Agent at port {port} does not expose /events — try querying OpenSearch directly")
+        else:
+            err_console.print(f"[red]✗[/] Agent HTTP {exc.code}: {exc}")
+        return
+    except Exception as exc:
+        err_console.print(f"[red]✗[/] Could not reach agent on port {port}: {exc}")
+        err_console.print("  Tip: export events via:  [cyan]vagrant ssh -c 'sudo tail -n 100 /var/log/audit/audit-events.jsonl'[/]")
+        return
+
+    if not events:
+        console.print("[dim]No events in the requested window.[/]")
+        return
+
+    console.print(f"[green]{len(events)} event(s)[/] from last {since}h\n")
+    for ev in events[-limit:]:
+        ts = str(ev.get("timestamp", "?"))[:19]
+        tech = ev.get("technique", "?")
+        key = ev.get("key", "?")
+        out = str(ev.get("cmd_output", ev.get("proctitle", "")))[:70].replace("\n", " ")
+        console.print(f"  [dim]{ts}[/]  [green]{tech:12s}[/]  [cyan]{key}[/]")
+        if out:
+            console.print(f"    [dim]{out}[/]")
 
 
 @main.command()
-@click.option("--type", "siem_type", required=True,
-              type=click.Choice(["splunk", "opensearch", "elastic", "sentinel", "chronicle", "wazuh"]))
-@click.argument("subcommand", default="status")
-def siem(siem_type: str, subcommand: str) -> None:
-    """Manage SIEM backend connections."""
-    console.print(f"[cyan]SIEM {subcommand}:[/] {siem_type}")
-    console.print("[yellow]TODO: implement SIEM commands[/]")
+@click.option("--detections", "-d", required=True, type=click.Path(exists=True),
+              help="JSONL file of CanonicalDetection objects (from dv enrich/map).")
+@click.option("--format", "fmt", default="svg", show_default=True,
+              type=click.Choice(["svg", "json"]))
+@click.option("--output", "-o", default="coverage-badge.svg", show_default=True,
+              help="Output file path (- for stdout).")
+@click.option("--label", default="ATT&CK coverage", show_default=True,
+              help="Left-side label text on the SVG badge.")
+def badge(detections: str, fmt: str, output: str, label: str) -> None:
+    """Generate an ATT&CK coverage badge from a detection corpus.
+
+    Reads a CanonicalDetection JSONL file, counts unique techniques across
+    rules whose validation_status is PASSED, and renders the ratio as an
+    SVG badge (shields.io flat style) or a JSON metrics object.
+
+    \b
+    Examples:
+      dv badge -d enriched.jsonl
+      dv badge -d enriched.jsonl --format json -o badge.json
+      dv badge -d enriched.jsonl -o coverage.svg --label "Detection coverage"
+    """
+    import json as _json
+    from detection_validator.normalizer.schema import CanonicalDetection, ValidationStatus
+
+    corpus: list[CanonicalDetection] = []
+    with open(detections, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                corpus.append(CanonicalDetection.model_validate_json(line))
+            except Exception:
+                continue
+
+    all_techniques: set[str] = set()
+    covered: set[str] = set()
+    for det in corpus:
+        for t in det.mitre_techniques:
+            all_techniques.add(t.full_id)
+            if det.validation_status == ValidationStatus.PASSED:
+                covered.add(t.full_id)
+
+    total = len(all_techniques)
+    n_covered = len(covered)
+    pct = (n_covered / total * 100) if total > 0 else 0.0
+    color_name = "brightgreen" if pct >= 70 else ("yellow" if pct >= 40 else "red")
+    color_hex = {"brightgreen": "#4c1", "yellow": "#dfb317", "red": "#e05d44"}[color_name]
+
+    if fmt == "json":
+        payload = {
+            "label": label,
+            "total_techniques": total,
+            "covered_techniques": n_covered,
+            "coverage_pct": round(pct, 1),
+            "color": color_name,
+            "rules_total": len(corpus),
+            "rules_passed": sum(1 for d in corpus if d.validation_status == ValidationStatus.PASSED),
+        }
+        text = _json.dumps(payload, indent=2)
+        if output in ("-", "coverage-badge.svg"):
+            console.print(text)
+        else:
+            Path(output).write_text(text, encoding="utf-8")
+            err_console.print(f"[green]✓[/] Badge JSON written to [bold]{output}[/]")
+        return
+
+    value = f"{n_covered}/{total} ({pct:.0f}%)"
+    lw = max(len(label) * 6 + 10, 60)
+    vw = max(len(value) * 6 + 10, 60)
+    tw = lw + vw
+
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{tw}" height="20">\n'
+        f'  <linearGradient id="s" x2="0" y2="100%">'
+        f'<stop offset="0" stop-color="#bbb" stop-opacity=".1"/>'
+        f'<stop offset="1" stop-opacity=".1"/></linearGradient>\n'
+        f'  <clipPath id="r"><rect width="{tw}" height="20" rx="3" fill="#fff"/></clipPath>\n'
+        f'  <g clip-path="url(#r)">\n'
+        f'    <rect width="{lw}" height="20" fill="#555"/>\n'
+        f'    <rect x="{lw}" width="{vw}" height="20" fill="{color_hex}"/>\n'
+        f'    <rect width="{tw}" height="20" fill="url(#s)"/>\n'
+        f'  </g>\n'
+        f'  <g fill="#fff" text-anchor="middle"'
+        f' font-family="DejaVu Sans,Verdana,Geneva,sans-serif" font-size="11">\n'
+        f'    <text x="{lw // 2}" y="15" fill="#010101" fill-opacity=".3">{label}</text>\n'
+        f'    <text x="{lw // 2}" y="14">{label}</text>\n'
+        f'    <text x="{lw + vw // 2}" y="15" fill="#010101" fill-opacity=".3">{value}</text>\n'
+        f'    <text x="{lw + vw // 2}" y="14">{value}</text>\n'
+        f'  </g>\n'
+        f'</svg>'
+    )
+
+    if output == "-":
+        console.print(svg)
+    else:
+        Path(output).write_text(svg, encoding="utf-8")
+        err_console.print(
+            f"[green]✓[/] Badge written to [bold]{output}[/]  "
+            f"coverage={n_covered}/{total} ({pct:.0f}%)"
+        )
 
 
 @main.command()
-@click.argument("subcommand", default="status")
-def agent(subcommand: str) -> None:
-    """Manage remote telemetry agents."""
-    console.print(f"[cyan]Agent {subcommand}[/]")
-    console.print("[yellow]TODO: implement agent commands[/]")
+@click.argument("rules", required=False, default=".")
+@click.option("--events", "-e", "events_file", default=None,
+              type=click.Path(exists=True),
+              help="JSONL events file for offline matching (omit to use live SIEM).")
+@click.option("--siem", default="opensearch", show_default=True,
+              help="SIEM backend to use when --events is not provided.")
+@click.option("--since", default=1.0, show_default=True,
+              help="Look-back window in hours.")
+@click.option("--interval", default=5, show_default=True,
+              help="Polling interval in seconds.")
+def watch(rules: str, events_file: str | None, siem: str, since: float, interval: int) -> None:
+    """Watch a rules directory for changes and re-validate automatically.
 
+    Polls RULES every INTERVAL seconds. When any rule file is added, modified,
+    or deleted the full corpus is re-evaluated and results are printed.
 
-@main.command()
-@click.option("--format", "fmt", default="svg",
-              type=click.Choice(["svg", "png", "json"]))
-@click.option("--output", default="coverage-badge.svg")
-def badge(fmt: str, output: str) -> None:
-    """Generate an ATT&CK coverage badge."""
-    console.print(f"[cyan]Generating badge:[/] format={fmt}  output={output}")
-    console.print("[yellow]TODO: implement badge generation[/]")
+    Pass --events for fast offline matching or omit it to query a live SIEM.
+
+    \b
+    Examples:
+      dv watch examples/detections/sigma/ --events events.jsonl
+      dv watch examples/detections/sigma/ --siem opensearch --since 1
+    """
+    import time as _time
+    from detection_validator.parsers.registry import ParserRegistry
+    from detection_validator.parsers.base import ParseError
+    from pathlib import Path as _Path
+    import datetime as _dt
+
+    rules_path = _Path(rules)
+    registry = ParserRegistry()
+    mode = f"events={_Path(events_file).name}" if events_file else f"siem={siem}"
+    console.print(f"[cyan]Watching[/] {rules}  [{mode}]  interval={interval}s  (Ctrl+C to stop)\n")
+
+    def _snapshot() -> dict[str, float]:
+        if rules_path.is_file():
+            return {str(rules_path): rules_path.stat().st_mtime}
+        return {str(f): f.stat().st_mtime for f in rules_path.rglob("*") if f.is_file()}
+
+    def _load() -> list:
+        files = [rules_path] if rules_path.is_file() else sorted(
+            f for f in rules_path.rglob("*") if f.is_file()
+        )
+        dets = []
+        for fp in files:
+            try:
+                p = registry.find_parser(fp)
+                if p:
+                    dets.append(p.parse_file(fp))
+            except (ParseError, Exception):
+                pass
+        return dets
+
+    def _run(dets: list) -> tuple:
+        import time as _t
+        if events_file:
+            from detection_validator.validator.matcher import match_corpus
+            t0 = _t.time()
+            results = match_corpus(dets, _Path(events_file), since_hours=since)
+        else:
+            from detection_validator.validator.engine import validate_corpus
+            t0 = _t.time()
+            results = validate_corpus(dets, siem=siem, since_hours=since)
+        return results, _t.time() - t0
+
+    last: dict[str, float] = {}
+    try:
+        while True:
+            cur = _snapshot()
+            changed = {f for f in cur if cur[f] != last.get(f)}
+            removed = set(last) - set(cur)
+            if changed or removed:
+                ts = _dt.datetime.now().strftime("%H:%M:%S")
+                if changed:
+                    console.print(f"[dim]{ts}[/] [yellow]changed:[/] "
+                                  f"{', '.join(_Path(f).name for f in sorted(changed))}")
+                if removed:
+                    console.print(f"[dim]{ts}[/] [red]removed:[/] "
+                                  f"{', '.join(_Path(f).name for f in sorted(removed))}")
+                dets = _load()
+                if dets:
+                    results, elapsed = _run(dets)
+                    _render_results(results, dets, elapsed, "-", "cli")
+                else:
+                    err_console.print("[red]No parseable rules found.[/]")
+                last = cur
+            _time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped.[/]")
 
 
 @main.command()
 @click.argument("rules", default=".")
-def watch(rules: str) -> None:
-    """Watch a rules directory for changes and re-validate automatically."""
-    console.print(f"[cyan]Watching:[/] {rules}")
-    console.print("[yellow]TODO: implement file watcher[/]")
+@click.option("--siem", default="opensearch", show_default=True,
+              type=click.Choice(["opensearch", "splunk"]),
+              help="SIEM backend to deploy rules to.")
+@click.option("--index", default="dv-telemetry-*", show_default=True,
+              help="Index pattern for OpenSearch alerting monitors.")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="Print what would be deployed without making any changes.")
+def deploy(rules: str, siem: str, index: str, dry_run: bool) -> None:
+    """Deploy detection rules to a SIEM backend.
 
+    Reads rules under RULES, converts each to the target SIEM's native
+    alert/saved-search format, and pushes them via the SIEM's REST API.
 
-@main.command()
-@click.argument("rules", default=".")
-@click.option("--siem", default="opensearch")
-def deploy(rules: str, siem: str) -> None:
-    """Deploy detection rules to a SIEM backend."""
-    console.print(f"[cyan]Deploying rules:[/] {rules}  siem={siem}")
-    console.print("[yellow]TODO: implement deployment[/]")
+    \b
+    OpenSearch: creates Alerting monitors under /_plugins/_alerting/monitors.
+    Splunk:     creates saved searches under /servicesNS/admin/search/saved/searches.
+
+    \b
+    Examples:
+      dv deploy examples/detections/sigma/ --siem opensearch --dry-run
+      dv deploy examples/detections/sigma/ --siem opensearch
+      dv deploy examples/detections/sigma/ --siem splunk
+    """
+    import base64 as _b64
+    import json as _json
+    import os as _os
+    import ssl
+    import urllib.request
+    import urllib.error
+    from detection_validator.parsers.registry import ParserRegistry
+    from detection_validator.parsers.base import ParseError
+    from pathlib import Path as _Path
+
+    registry = ParserRegistry()
+    root = _Path(rules)
+    files = [root] if root.is_file() else sorted(f for f in root.rglob("*") if f.is_file())
+    detections = []
+    for fp in files:
+        try:
+            p = registry.find_parser(fp)
+            if p:
+                detections.append(p.parse_file(fp))
+        except (ParseError, Exception) as exc:
+            err_console.print(f"[yellow]⚠[/] {fp.name}: {exc}")
+
+    if not detections:
+        err_console.print(f"[red]No parseable rules found in:[/] {rules}")
+        raise SystemExit(1)
+
+    if dry_run:
+        console.print(f"[yellow]Dry run[/] — would deploy {len(detections)} rule(s) to {siem}\n")
+
+    deployed = failed = 0
+
+    if siem == "opensearch":
+        os_pass = _os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "")
+        if not os_pass:
+            err_console.print("[red]OPENSEARCH_INITIAL_ADMIN_PASSWORD not set[/]")
+            raise SystemExit(1)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode()
+        base_url = "https://localhost:9200/_plugins/_alerting/monitors"
+
+        for det in detections:
+            techs = [t.full_id for t in det.mitre_techniques]
+            should = [{"term": {"technique.keyword": t}} for t in techs]
+            if not should:
+                should = [{"match_all": {}}]
+
+            monitor = {
+                "type": "monitor",
+                "name": det.name[:255],
+                "monitor_type": "query_level_monitor",
+                "enabled": True,
+                "schedule": {"period": {"interval": 1, "unit": "HOURS"}},
+                "inputs": [{
+                    "search": {
+                        "indices": [index],
+                        "query": {
+                            "size": 0,
+                            "query": {"bool": {"should": should, "minimum_should_match": 1}},
+                        },
+                    }
+                }],
+                "triggers": [{
+                    "query_level_trigger": {
+                        "id": str(det.id)[:64],
+                        "name": "fires",
+                        "severity": "1",
+                        "condition": {
+                            "script": {
+                                "source": "ctx.results[0].hits.total.value > 0",
+                                "lang": "painless",
+                            }
+                        },
+                        "actions": [],
+                    }
+                }],
+            }
+
+            if dry_run:
+                console.print(f"  [cyan]{det.name}[/]  techniques={techs or '(none)'}")
+                deployed += 1
+                continue
+
+            payload = _json.dumps(monitor).encode()
+            req = urllib.request.Request(
+                base_url,
+                data=payload,
+                method="POST",
+                headers={"Content-Type": "application/json",
+                         "Authorization": f"Basic {creds}"},
+            )
+            try:
+                with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                    _json.loads(resp.read())
+                console.print(f"[green]✓[/] Deployed: {det.name}")
+                deployed += 1
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode(errors="replace")[:120]
+                err_console.print(f"[red]✗[/] {det.name}: HTTP {exc.code} — {body}")
+                failed += 1
+            except Exception as exc:
+                err_console.print(f"[red]✗[/] {det.name}: {exc}")
+                failed += 1
+
+    elif siem == "splunk":
+        splunk_url = "http://localhost:8089/servicesNS/admin/search/saved/searches"
+        sev_map = {"critical": "1", "high": "2", "med": "3", "low": "4", "info": "5"}
+
+        for det in detections:
+            techs = [t.full_id for t in det.mitre_techniques]
+            tech_filter = " OR ".join(f'technique="{t}"' for t in techs) if techs else ""
+            spl = f"index=dv-telemetry {tech_filter} | table _time, technique, key, exe, uid"
+            sev = sev_map.get(det.severity.value, "3")
+
+            if dry_run:
+                console.print(f"  [cyan]{det.name}[/]  search={spl[:60]}…")
+                deployed += 1
+                continue
+
+            import urllib.parse
+            body = urllib.parse.urlencode({
+                "name": det.name[:255],
+                "search": spl,
+                "description": det.description or "",
+                "alert.severity": sev,
+                "is_scheduled": "1",
+                "cron_schedule": "0 * * * *",
+                "alert_type": "number of events",
+                "alert_comparator": "greater than",
+                "alert_threshold": "0",
+            }).encode()
+            req = urllib.request.Request(splunk_url, data=body, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    pass
+                console.print(f"[green]✓[/] Deployed: {det.name}")
+                deployed += 1
+            except urllib.error.HTTPError as exc:
+                err_console.print(f"[red]✗[/] {det.name}: HTTP {exc.code}")
+                failed += 1
+            except Exception as exc:
+                err_console.print(f"[red]✗[/] {det.name}: {exc}")
+                failed += 1
+
+    suffix = " [yellow](dry run)[/]" if dry_run else ""
+    console.print(
+        f"\n[bold]Deploy:[/] {deployed} succeeded  [red]{failed} failed[/]{suffix}"
+    )
 
 
 @main.command()
