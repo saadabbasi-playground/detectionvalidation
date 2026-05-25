@@ -6,8 +6,12 @@ Multi-SIEM detection validation platform. Simulate CVE-based attacks, capture re
 dv doctor  # check your environment before the first run
 dv attack  --cve CVE-2021-44228 --target vagrant --watch
 dv validate examples/detections/sigma/ --since 1 --format json | dv report
-dv match   --events events.jsonl examples/detections/sigma/ --since 0 --format json | dv report --format html -o report.html
-dv cve-coverage --cve CVE-2021-44228 --detections mapped.jsonl
+dv match   --events events.jsonl examples/detections/sigma/ --format json | dv report --format html -o report.html
+dv watch   examples/detections/sigma/ --events events.jsonl          # re-validate on every save
+dv migrate sigma splunk --rules detections/ -o searches.conf          # convert formats
+dv deploy  examples/detections/sigma/ --siem opensearch --dry-run     # push to SIEM
+dv badge   -d enriched.jsonl -o coverage.svg                          # coverage badge
+dv siem status && dv agent status                                      # inspect stack
 ```
 
 ---
@@ -489,6 +493,86 @@ Then re-run `ingest → map → enrich → cve-coverage` to confirm the gap clos
 
 ---
 
+## Rule migration
+
+Convert rules between formats without touching a SIEM:
+
+```bash
+# Sigma → Splunk savedsearches.conf
+dv migrate sigma splunk --rules examples/detections/sigma/ -o searches.conf
+
+# Sigma → KQL (Azure Sentinel / Microsoft Defender)
+dv migrate sigma kql --rules examples/detections/sigma/ -o queries.kql
+
+# Normalise and re-export as clean Sigma YAML
+dv migrate sigma sigma --rules examples/detections/sigma/ -o normalised/
+```
+
+## Deploying rules to a SIEM
+
+Push rules directly to a running SIEM so they fire automatically:
+
+```bash
+# Preview first — no changes made
+dv deploy examples/detections/sigma/ --siem opensearch --dry-run
+
+# Deploy — creates one OpenSearch Alerting monitor per rule
+export OPENSEARCH_INITIAL_ADMIN_PASSWORD="<your-password>"
+dv deploy examples/detections/sigma/ --siem opensearch
+
+# Deploy to Splunk (creates saved searches with hourly schedule)
+dv deploy examples/detections/sigma/ --siem splunk
+```
+
+## Continuous validation with dv watch
+
+Stay in a tight feedback loop while writing rules:
+
+```bash
+# Re-match against a local event file every time you save a rule
+dv watch examples/detections/sigma/ --events events.jsonl
+
+# Or query the live SIEM — re-validates whenever a rule file changes
+dv watch examples/detections/sigma/ --siem opensearch --since 1
+
+# Faster polling for active development
+dv watch examples/detections/sigma/ --events events.jsonl --interval 2
+```
+
+## Coverage badge
+
+Generate a badge showing your detection coverage for README or dashboards:
+
+```bash
+# SVG badge (shields.io flat style)
+dv badge -d enriched.jsonl -o coverage.svg
+
+# JSON metrics for scripting
+dv badge -d enriched.jsonl --format json -o badge.json
+```
+
+Badge colour: green ≥ 70 %, yellow ≥ 40 %, red below that.
+
+## SIEM and agent inspection
+
+```bash
+# Check OpenSearch version, connectivity, and telemetry document count
+dv siem status
+dv siem status --type splunk
+
+# Run a test query and show the most recent events
+dv siem test --size 5
+
+# Check victim agent health
+dv agent status
+dv agent status --port 9099
+
+# Fetch the last 30 minutes of events from the agent
+dv agent logs --since 0.5 --limit 50
+```
+
+---
+
 ## ATT&CK Navigator export
 
 Visualize which techniques your detections cover:
@@ -527,9 +611,15 @@ Ready-to-use rules under `examples/detections/`:
 │  dv validate     — query live SIEM, report PASS/FAIL per rule  │
 │  dv match        — same evaluation offline against a JSONL file│
 │  dv report       — render results as CLI / SARIF / HTML        │
+│  dv watch        — re-validate on rule file changes            │
 │  dv ingest       — parse Sigma/Splunk/KQL/YARA/EQL to JSONL    │
 │  dv map          — map rules to ATT&CK techniques              │
 │  dv enrich       — fill technique names, CVE metadata, severity│
+│  dv migrate      — convert rules between formats               │
+│  dv deploy       — push rules to OpenSearch / Splunk           │
+│  dv badge        — generate SVG / JSON coverage badge          │
+│  dv siem         — check connectivity, run test queries        │
+│  dv agent        — check agent health, fetch recent events     │
 │  dv cve-coverage — analyze coverage gaps per CVE               │
 │  dv navigator    — export ATT&CK Navigator layer               │
 └──────────────────────────────────────────────────────────────────┘

@@ -57,9 +57,17 @@ dv doctor --fix    # also auto-download empty intelligence caches
 | `dv validate` | Query live SIEM for rule hits, report PASS/FAIL per rule |
 | `dv match` | Same evaluation offline against a local JSONL event file |
 | `dv report` | Render results as CLI summary / SARIF / HTML |
+| `dv watch` | Re-validate automatically whenever rule files change |
 | `dv ingest` | Parse Sigma/Splunk/KQL/YARA/EQL rules to canonical JSONL |
 | `dv map` | Map parsed rules to ATT&CK techniques |
 | `dv enrich` | Fill technique names, CVE metadata, and severity from ATT&CK/NVD caches |
+| `dv migrate` | Convert rules between formats (sigma → splunk / kql / sigma) |
+| `dv deploy` | Push rules to a live SIEM as alerting monitors or saved searches |
+| `dv badge` | Generate an SVG or JSON ATT&CK coverage badge |
+| `dv siem status` | Check SIEM connectivity and report document counts |
+| `dv siem test` | Run a test query and display sample events |
+| `dv agent status` | Check victim agent health endpoint |
+| `dv agent logs` | Fetch recent audit events from the victim agent |
 | `dv cve-coverage` | Analyze detection coverage gaps per CVE |
 | `dv navigator` | Export ATT&CK Navigator layer from detection corpus |
 | `dv intel update` | Refresh local ATT&CK, CVE, EPSS, KEV caches |
@@ -131,6 +139,85 @@ The ATT&CK and CVE knowledge bases must be populated first:
 ```bash
 dv intel update --source attack
 dv intel update --source cve --cve CVE-2021-44228,CVE-2021-34527,CVE-2021-26855
+```
+
+## Rule migration
+
+`dv migrate` converts rules between formats using the existing parsers plus template serialisers.
+Supported target formats: `sigma`, `splunk`, `kql`.
+
+```bash
+# Sigma → Splunk savedsearches.conf
+dv migrate sigma splunk --rules detections/ -o searches.conf
+
+# Sigma → KQL (Azure Sentinel / Defender)
+dv migrate sigma kql --rules detections/ -o queries.kql
+
+# Sigma round-trip (normalise and re-export)
+dv migrate sigma sigma --rules detections/ -o normalised/
+```
+
+## Deploying rules to a SIEM
+
+`dv deploy` pushes rules directly to a running SIEM via REST API.
+
+| Target | What gets created |
+|---|---|
+| `opensearch` | OpenSearch Alerting monitor (hourly schedule, technique-based query) |
+| `splunk` | Splunk saved search (hourly cron, SPL query from technique IDs) |
+
+```bash
+# Preview without making changes
+dv deploy examples/detections/sigma/ --siem opensearch --dry-run
+
+# Deploy for real
+export OPENSEARCH_INITIAL_ADMIN_PASSWORD="<your-password>"
+dv deploy examples/detections/sigma/ --siem opensearch
+```
+
+## Continuous validation with dv watch
+
+`dv watch` polls a rules directory and re-runs validation whenever a file changes.
+Use it during rule development to get instant feedback.
+
+```bash
+# Offline — re-match against a local event file on every save
+dv watch examples/detections/sigma/ --events events.jsonl
+
+# Live — re-query OpenSearch on every save
+dv watch examples/detections/sigma/ --siem opensearch --since 1
+
+# Faster polling for active development
+dv watch examples/detections/sigma/ --events events.jsonl --interval 2
+```
+
+## Coverage badge
+
+`dv badge` computes the ratio of PASSED techniques to total techniques and renders an SVG badge.
+
+```bash
+dv badge -d enriched.jsonl -o coverage.svg
+dv badge -d enriched.jsonl --format json -o badge.json
+```
+
+Green ≥ 70 %, yellow ≥ 40 %, red below that.
+
+## SIEM and agent inspection
+
+```bash
+# Check OpenSearch connectivity and index document counts
+dv siem status
+dv siem status --type splunk
+
+# Run a test query and show the last 5 events
+dv siem test --size 5
+
+# Check victim agent health
+dv agent status
+dv agent status --port 9099
+
+# Fetch the last 30 minutes of audit events from the agent
+dv agent logs --since 0.5 --limit 50
 ```
 
 ## Sections
