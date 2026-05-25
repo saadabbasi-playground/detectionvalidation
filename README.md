@@ -205,14 +205,102 @@ which dv   # should point inside .venv/bin/
 ./dv up lab --siem opensearch --profile standard
 
 # 2. Parse and ingest your detection rules
-dv ingest detections/ -o canonical.jsonl
+detection-validator ingest detections/ -o canonical.jsonl
 
 # 3. Map to ATT&CK
-dv map -i canonical.jsonl -o mapped.jsonl --mode hybrid
+detection-validator map -i canonical.jsonl -o mapped.jsonl --mode hybrid
 
 # 4. Generate a SARIF report for GitHub Code Scanning
 ./dv report --format sarif --output results.sarif
 ```
+
+---
+
+## CVE-based detection workflow
+
+This workflow starts from a CVE, finds the techniques an attacker would use to
+exploit it, checks your detection corpus for coverage, and surfaces gaps.
+
+### Sample detections
+
+Three ready-to-use Sigma rules are included under `examples/detections/sigma/`:
+
+| File | CVE | ATT&CK techniques |
+|---|---|---|
+| `log4shell_jndi_injection.yml` | CVE-2021-44228 | T1190, T1059.004 |
+| `printnightmare_spooler_abuse.yml` | CVE-2021-34527 | T1068, T1547.012, T1574.001 |
+| `proxylogon_exchange_ssrf.yml` | CVE-2021-26855 | T1190, T1505.003, T1078 |
+
+Each rule uses the `cve.YYYY.NNNNN` tag convention so the CVE mapper can link
+them to the coverage analysis automatically.
+
+### Running the pipeline
+
+```bash
+# Step 1 — pull CVE metadata (NVD, CISA KEV, EPSS) and CTID technique mappings
+detection-validator intel update --source cve
+detection-validator intel update --source attack
+
+# Step 2 — ingest and normalize all detections
+detection-validator ingest examples/detections/ -o canonical.jsonl
+
+# Step 3 — map to ATT&CK (explicit tags + CWE inference)
+detection-validator map -i canonical.jsonl -o mapped.jsonl --mode hybrid
+
+# Step 4 — analyze coverage for the three CVEs
+detection-validator cve-coverage \
+  --cve CVE-2021-44228,CVE-2021-34527,CVE-2021-26855 \
+  --detections mapped.jsonl
+```
+
+### Sample output
+
+```
+CVE-2021-26855  KEV CVSS=9.1  EPSS=0.943  coverage=0%  residual_risk=8.585
+  ✗ T1090  command-and-control  conf=0.75
+
+CVE-2021-34527  KEV CVSS=8.8  EPSS=0.942  coverage=0%  residual_risk=8.293
+  (no techniques mapped — CWE missing from NVD; add cve.2021.34527 tag to
+   your Splunk/KQL rules covering T1068 to register coverage)
+
+CVE-2021-44228  KEV CVSS=10.0  EPSS=0.945  coverage=67%  residual_risk=3.149
+  ✓ T1059  execution  conf=0.85  ← Log4Shell JNDI Injection Attempt, ...
+  ✓ T1190  initial-access  conf=0.80  ← Log4Shell JNDI Injection Attempt, ...
+  ✗ T1499  impact  conf=0.60
+```
+
+**Reading the output:**
+- **KEV** — CVE is on CISA's Known Exploited Vulnerabilities catalog (actively exploited)
+- **EPSS** — probability of exploitation in the next 30 days (source: FIRST.org)
+- **residual_risk** — `CVSS × EPSS × (1 − coverage_ratio)`; range 0–10
+- **✓ / ✗** — whether your detection corpus covers that technique
+- **conf** — mapping confidence (CTID > CWE inference; 1.0 = explicit tag in the rule)
+
+### Adding a detection to close a gap
+
+If `cve-coverage` reports ✗ for a technique, create a Sigma rule and tag it:
+
+```yaml
+tags:
+    - attack.T1499          # the uncovered technique
+    - cve.2021.44228        # links this rule to the CVE in coverage reports
+```
+
+Re-run `ingest → map → cve-coverage` to confirm the gap closes.
+
+### Notes on technique mapping sources
+
+Technique inference works in priority order:
+
+1. **Explicit tags** in the rule (`attack.TXXXX`) — confidence 1.0
+2. **CTID dataset** ([center-for-threat-informed-defense/attack_to_cve](https://github.com/center-for-threat-informed-defense/attack_to_cve)) — ~827 CVE mappings, confidence 0.90
+3. **CWE inference** — maps NVD CWEs to ATT&CK via a built-in table, confidence varies
+
+If a CVE has no CWE in NVD and no CTID entry, no techniques are inferred
+(as seen for CVE-2021-34527 above). Adding explicit `attack.TXXXX` tags to
+your rules is the most reliable way to ensure coverage is counted.
+
+---
 
 ## Architecture
 

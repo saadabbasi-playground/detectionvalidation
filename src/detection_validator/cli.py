@@ -10,6 +10,7 @@ import click
 from rich.console import Console
 
 console = Console()
+err_console = Console(stderr=True)
 
 
 @click.group()
@@ -142,7 +143,7 @@ def ingest(path: str, output: str, fmt: str | None, recursive: bool, strict: boo
                 if fmt:
                     parser = next((p for p in registry.parsers if p.name == fmt), None)
                     if parser is None:
-                        console.print(f"[red]Unknown parser: {fmt}[/]", file=sys.stderr)
+                        err_console.print(f"[red]Unknown parser: {fmt}[/]")
                         raise SystemExit(1)
                     detection = parser.parse_file(file_path)
                 else:
@@ -154,16 +155,16 @@ def ingest(path: str, output: str, fmt: str | None, recursive: bool, strict: boo
                 line = detection.model_dump_json()
                 print(line, file=out)
                 total += 1
-                console.print(f"[green]✓[/] {file_path}  ({parser.name})", file=sys.stderr)
+                err_console.print(f"[green]✓[/] {file_path}  ({parser.name})")
 
             except ParseError as exc:
                 errors += 1
-                console.print(f"[red]✗[/] {file_path}: {exc}", file=sys.stderr)
+                err_console.print(f"[red]✗[/] {file_path}: {exc}")
                 if strict:
                     raise SystemExit(1)
             except Exception as exc:  # noqa: BLE001
                 errors += 1
-                console.print(f"[red]✗[/] {file_path}: {exc}", file=sys.stderr)
+                err_console.print(f"[red]✗[/] {file_path}: {exc}")
                 if strict:
                     raise SystemExit(1)
 
@@ -171,10 +172,7 @@ def ingest(path: str, output: str, fmt: str | None, recursive: bool, strict: boo
         if output != "-":
             out.close()
 
-    console.print(
-        f"\n[bold]Ingested:[/] {total} rules  [red]errors:[/] {errors}",
-        file=sys.stderr,
-    )
+    err_console.print(f"\n[bold]Ingested:[/] {total} rules  [red]errors:[/] {errors}")
     if strict and errors:
         raise SystemExit(1)
 
@@ -219,39 +217,32 @@ def intel_update(source: str, domain: str, cve_ids: str | None, force: bool) -> 
             else [domain]
         )
         for d in domains:
-            console.print(f"[cyan]Refreshing ATT&CK bundle:[/] {d}", file=sys.stderr)
+            err_console.print(f"[cyan]Refreshing ATT&CK bundle:[/] {d}")
             kb = AttackKnowledgeBase(domain=d)
             try:
                 kb.ensure_loaded(force_refresh=force)
-                console.print(
-                    f"[green]✓[/] {d}: {len(kb._techniques)} techniques indexed",
-                    file=sys.stderr,
-                )
+                err_console.print(f"[green]✓[/] {d}: {len(kb._techniques)} techniques indexed")
             except Exception as exc:
-                console.print(f"[red]✗[/] {d}: {exc}", file=sys.stderr)
+                err_console.print(f"[red]✗[/] {d}: {exc}")
 
     if source in ("cve", "all"):
         from detection_validator.mappers.cve_mapper import CVEKnowledgeBase
 
-        console.print("[cyan]Refreshing CVE intelligence caches[/]", file=sys.stderr)
+        err_console.print("[cyan]Refreshing CVE intelligence caches[/]")
         kb = CVEKnowledgeBase()
         ids = [c.strip() for c in cve_ids.split(",")] if cve_ids else None
         try:
             kb.update(cve_ids=ids, force=force)
             if ids:
-                console.print(
-                    f"[green]✓[/] CVE cache refreshed for: {', '.join(ids)}",
-                    file=sys.stderr,
-                )
+                err_console.print(f"[green]✓[/] CVE cache refreshed for: {', '.join(ids)}")
             else:
                 kev_size = len(kb._kev_catalog or {})
                 ctid_size = len(kb._ctid_catalog or {})
-                console.print(
-                    f"[green]✓[/] KEV: {kev_size} entries  CTID: {ctid_size} entries",
-                    file=sys.stderr,
+                err_console.print(
+                    f"[green]✓[/] KEV: {kev_size} entries  CTID: {ctid_size} entries"
                 )
         except Exception as exc:
-            console.print(f"[red]✗[/] CVE update failed: {exc}", file=sys.stderr)
+            err_console.print(f"[red]✗[/] CVE update failed: {exc}")
 
 
 @main.command()
@@ -301,8 +292,8 @@ def map(
     try:
         kb.ensure_loaded()
     except Exception as exc:
-        console.print(f"[yellow]⚠ Could not load ATT&CK knowledge base: {exc}[/]", file=sys.stderr)
-        console.print("[yellow]Proceeding without KB validation (inferred mode only)[/]", file=sys.stderr)
+        err_console.print(f"[yellow]⚠ Could not load ATT&CK knowledge base: {exc}[/]")
+        err_console.print("[yellow]Proceeding without KB validation (inferred mode only)[/]")
 
     mapper = AttackMapper(kb=kb, use_llm=llm)
     out = open(output, "w", encoding="utf-8") if output != "-" else sys.stdout
@@ -318,7 +309,7 @@ def map(
                 try:
                     detection = CanonicalDetection.model_validate_json(line)
                 except Exception as exc:
-                    console.print(f"[red]Parse error:[/] {exc}", file=sys.stderr)
+                    err_console.print(f"[red]Parse error:[/] {exc}")
                     errors += 1
                     continue
 
@@ -327,12 +318,12 @@ def map(
 
                 if result.errors:
                     for e in result.errors:
-                        console.print(f"[red]  ✗[/] {detection.name}: {e}", file=sys.stderr)
+                        err_console.print(f"[red]  ✗[/] {detection.name}: {e}")
                     errors += len(result.errors)
 
                 if result.warnings:
                     for w in result.warnings:
-                        console.print(f"[yellow]  ⚠[/] {detection.name}: {w}", file=sys.stderr)
+                        err_console.print(f"[yellow]  ⚠[/] {detection.name}: {w}")
                     warnings_count += len(result.warnings)
 
                 new_count = len(updated.mitre_techniques) - len(detection.mitre_techniques)
@@ -346,12 +337,11 @@ def map(
         if output != "-":
             out.close()
 
-    console.print(
+    err_console.print(
         f"\n[bold]Mapped:[/] {total} detections  "
         f"[green]+{applied} techniques[/]  "
         f"[yellow]warnings: {warnings_count}[/]  "
-        f"[red]errors: {errors}[/]",
-        file=sys.stderr,
+        f"[red]errors: {errors}[/]"
     )
 
 
@@ -405,7 +395,6 @@ def cve_coverage(
 
     ids = [c.strip().upper() for c in cve_ids.split(",") if c.strip()]
 
-    # Load detection corpus
     corpus: list[CanonicalDetection] = []
     if detections:
         with open(detections, encoding="utf-8") as fh:
@@ -416,8 +405,7 @@ def cve_coverage(
                 try:
                     corpus.append(CanonicalDetection.model_validate_json(line))
                 except Exception as exc:
-                    console.print(f"[yellow]⚠ Skipping malformed detection: {exc}[/]",
-                                  file=sys.stderr)
+                    err_console.print(f"[yellow]⚠ Skipping malformed detection: {exc}[/]")
 
     kb = CVEKnowledgeBase()
     mapper = CVEToTechniqueMapper(kb=kb, use_llm=llm)
@@ -426,10 +414,10 @@ def cve_coverage(
     results = analyzer.analyze_corpus(ids, corpus)
     results = [r for r in results if r.residual_risk_score >= min_risk]
 
-    out = open(output, "w", encoding="utf-8") if output != "-" else sys.stdout
+    out_file = open(output, "w", encoding="utf-8") if output != "-" else sys.stdout
+    out_console = Console(file=out_file, highlight=False)
     try:
         if fmt == "json":
-            import dataclasses
             payload = []
             for r in results:
                 payload.append({
@@ -452,17 +440,16 @@ def cve_coverage(
                     ],
                     "covering_detections": r.covering_detections,
                 })
-            print(json.dumps(payload, indent=2), file=out)
+            print(json.dumps(payload, indent=2), file=out_file)
         else:
             for r in results:
                 kev_flag = "[red]KEV[/] " if r.in_kev else ""
-                console.print(
+                out_console.print(
                     f"\n[bold cyan]{r.cve_id}[/]  {kev_flag}"
                     f"CVSS={r.cvss_score or '?'}  "
                     f"EPSS={r.epss_score or '?'}  "
                     f"coverage={r.coverage_ratio:.0%}  "
-                    f"residual_risk=[bold]{r.residual_risk_score:.3f}[/]",
-                    file=out,
+                    f"residual_risk=[bold]{r.residual_risk_score:.3f}[/]"
                 )
                 if r.techniques:
                     for t in r.techniques:
@@ -470,16 +457,15 @@ def cve_coverage(
                         icon = "[green]✓[/]" if covered else "[red]✗[/]"
                         det_names = r.covering_detections.get(t.technique_id, [])
                         det_str = f" ← {', '.join(det_names[:3])}" if det_names else ""
-                        console.print(
+                        out_console.print(
                             f"  {icon} {t.technique_id}  {t.tactic}  "
-                            f"conf={t.confidence:.2f}  [{t.source}]{det_str}",
-                            file=out,
+                            f"conf={t.confidence:.2f}  [{t.source}]{det_str}"
                         )
                 else:
-                    console.print("  [yellow](no techniques mapped)[/]", file=out)
+                    out_console.print("  [yellow](no techniques mapped)[/]")
     finally:
         if output != "-":
-            out.close()
+            out_file.close()
 
 
 if __name__ == "__main__":

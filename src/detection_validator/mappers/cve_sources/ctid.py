@@ -28,17 +28,28 @@ logger = logging.getLogger(__name__)
 
 _CACHE_FILE = "ctid_mappings.json.gz"
 
-# Column name aliases → canonical field
+# Column name aliases — CVE column
 _CVE_COLS = {"cve", "cve_id", "cve id"}
-_TECH_COLS = {"technique", "technique_id", "attack technique", "attack_technique", "techniques"}
-_TACTIC_COLS = {"tactic", "tactic_id", "attack tactic"}
+# All technique columns present in the CTID CSV (primary, secondary, exploitation)
+_TECH_COLS = {
+    "technique", "technique_id", "attack technique", "attack_technique", "techniques",
+    "primary impact", "secondary impact", "exploitation technique", "uncategorized",
+}
+
+
+def _col_indices(header: list[str], candidates: set[str]) -> list[int]:
+    return [i for i, h in enumerate(header) if h.strip().lower() in candidates]
 
 
 def _col_index(header: list[str], candidates: set[str]) -> int | None:
-    for i, h in enumerate(header):
-        if h.strip().lower() in candidates:
-            return i
-    return None
+    indices = _col_indices(header, candidates)
+    return indices[0] if indices else None
+
+
+def _extract_techniques(cell: str) -> list[str]:
+    """Split a cell that may contain T-codes separated by commas or semicolons."""
+    parts = cell.replace(";", ",").split(",")
+    return [p.strip() for p in parts if p.strip().upper().startswith("T")]
 
 
 def _parse_csv(text: str) -> dict[str, list[str]]:
@@ -50,25 +61,25 @@ def _parse_csv(text: str) -> dict[str, list[str]]:
 
     header = [c.strip().lower() for c in rows[0]]
     cve_idx = _col_index(header, _CVE_COLS)
-    tech_idx = _col_index(header, _TECH_COLS)
+    tech_indices = _col_indices(header, _TECH_COLS)
 
-    if cve_idx is None or tech_idx is None:
+    if cve_idx is None or not tech_indices:
         logger.warning("CTID CSV: could not find CVE/technique columns in header: %s", header)
         return {}
 
     result: dict[str, list[str]] = {}
     for row in rows[1:]:
-        if len(row) <= max(cve_idx, tech_idx):
+        if len(row) <= cve_idx:
             continue
         cve_id = row[cve_idx].strip().upper()
-        tech = row[tech_idx].strip()
-        if not cve_id.startswith("CVE-") or not tech:
+        if not cve_id.startswith("CVE-"):
             continue
-        # tech cell may contain comma-separated list
-        for t in tech.replace(";", ",").split(","):
-            t = t.strip()
-            if t and t not in result.get(cve_id, []):
-                result.setdefault(cve_id, []).append(t)
+        for idx in tech_indices:
+            if idx >= len(row):
+                continue
+            for t in _extract_techniques(row[idx]):
+                if t not in result.get(cve_id, []):
+                    result.setdefault(cve_id, []).append(t)
     return result
 
 
@@ -120,7 +131,7 @@ class CTIDFetcher(CVEFetcher):
             try:
                 resp = requests.get(url, timeout=self._timeout)
                 resp.raise_for_status()
-                text = resp.text
+                text = resp.text.lstrip("﻿")  # strip UTF-8 BOM if present
 
                 if url.endswith(".csv") or "csv" in resp.headers.get("content-type", ""):
                     mappings = _parse_csv(text)

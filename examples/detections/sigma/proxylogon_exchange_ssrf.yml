@@ -1,0 +1,45 @@
+title: ProxyLogon Exchange Server SSRF Exploitation
+id: d9c3a156-4b82-5e0f-c947-6e2d3f9a0b18
+status: stable
+description: |
+  Detects exploitation of the Microsoft Exchange Server SSRF chain (ProxyLogon,
+  CVE-2021-26855). Attackers craft HTTP requests with a malicious X-BEResource
+  cookie to bypass authentication and reach the Exchange backend as SYSTEM. This
+  is frequently chained with CVE-2021-27065 to drop a webshell under the
+  Exchange web root (aspnet_client), enabling persistent remote access.
+author: Security Operations
+date: 2024/01/15
+modified: 2024/06/01
+tags:
+    - attack.initial-access
+    - attack.T1190
+    - attack.persistence
+    - attack.T1505.003
+    - attack.credential-access
+    - attack.T1078
+    - cve.2021.26855
+logsource:
+    category: webserver
+    product: ms-exchange
+detection:
+    selection_ssrf:
+        cs-uri-stem|startswith:
+            - '/ecp/'
+            - '/owa/'
+            - '/autodiscover/'
+            - '/mapi/'
+        cs-cookie|contains: 'X-BEResource'
+    selection_webshell_drop:
+        cs-uri-stem|startswith: '/aspnet_client/'
+        cs-uri-stem|endswith: '.aspx'
+    selection_webshell_activity:
+        cs-uri-stem|contains:
+            - '/aspnet_client/'
+            - '/owa/auth/'
+        sc-status: 200
+        cs-method: POST
+    condition: selection_ssrf or selection_webshell_drop or selection_webshell_activity
+falsepositives:
+    - Legitimate Exchange administration via ECP/OWA
+    - Authorized penetration testing of Exchange infrastructure
+level: critical
