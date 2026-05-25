@@ -183,13 +183,93 @@ def validate(rules: str, siem: str, since: float, index: str, output: str, fmt: 
 
 
 @main.command()
-@click.option("--format", "fmt", default="cli",
-              type=click.Choice(["cli", "json", "html", "sarif", "slack"]))
-@click.option("--output", default="-", help="Output file path (- for stdout).")
-def report(fmt: str, output: str) -> None:
-    """Generate a validation report from the most recent run."""
-    console.print(f"[cyan]Generating report:[/] format={fmt}  output={output}")
-    console.print("[yellow]TODO: implement report generation[/]")
+@click.option("--results", "-r", "results_file", default="-",
+              help="JSON results file from 'dv validate --format json' (- = stdin).")
+@click.option("--format", "fmt", default="cli", show_default=True,
+              type=click.Choice(["cli", "json", "sarif", "html"]))
+@click.option("--output", "-o", default="-", show_default=True,
+              help="Output file path (- for stdout).")
+def report(results_file: str, fmt: str, output: str) -> None:
+    """Generate a validation report from 'dv validate --format json' output.
+
+    Reads the JSON results produced by 'dv validate --format json' and
+    renders them in the requested format.
+
+    \b
+    Examples:
+      # Pipe directly from validate
+      dv validate examples/detections/sigma/ --format json | dv report
+
+      # Save results then render as HTML
+      dv validate examples/detections/sigma/ --format json -o results.json
+      dv report --results results.json --format html -o report.html
+
+      # SARIF for GitHub Code Scanning
+      dv validate examples/detections/sigma/ --format json | dv report --format sarif -o scan.sarif
+    """
+    import json as _json
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    # ── Load results ──────────────────────────────────────────────────────────
+    try:
+        if results_file == "-":
+            raw = _sys.stdin.read()
+        else:
+            raw = _Path(results_file).read_text(encoding="utf-8")
+        results: list[dict] = _json.loads(raw)
+        if not isinstance(results, list):
+            raise ValueError("Expected a JSON array")
+    except Exception as exc:
+        err_console.print(f"[red]Failed to read results:[/] {exc}")
+        err_console.print(
+            "Run: [cyan]dv validate <rules> --format json[/] to generate results."
+        )
+        raise SystemExit(1)
+
+    # ── Render ────────────────────────────────────────────────────────────────
+    out_path = _Path(output) if output != "-" else None
+
+    if fmt == "json":
+        text = _json.dumps(results, indent=2, default=str)
+        if out_path:
+            out_path.write_text(text, encoding="utf-8")
+            err_console.print(f"[green]✓[/] JSON written to [bold]{output}[/]")
+        else:
+            console.print(text)
+
+    elif fmt == "sarif":
+        from detection_validator.reporters.sarif import build as sarif_build
+        sarif_doc = sarif_build(results)
+        text = _json.dumps(sarif_doc, indent=2)
+        if out_path:
+            out_path.write_text(text, encoding="utf-8")
+            n_fail = len([r for r in results if r.get("status") in ("fail", "error")])
+            err_console.print(
+                f"[green]✓[/] SARIF written to [bold]{output}[/]  "
+                f"({n_fail} finding(s))"
+            )
+        else:
+            console.print(text)
+
+    elif fmt == "html":
+        from detection_validator.reporters.html import build as html_build
+        html_text = html_build(results)
+        if out_path:
+            out_path.write_text(html_text, encoding="utf-8")
+            err_console.print(f"[green]✓[/] HTML report written to [bold]{output}[/]")
+        else:
+            console.print(html_text)
+
+    else:  # cli
+        from detection_validator.reporters.cli import report as cli_report
+        from rich.console import Console as _Console
+        if out_path:
+            with open(out_path, "w", encoding="utf-8") as fh:
+                cli_report(results, _Console(file=fh, highlight=False))
+            err_console.print(f"[green]✓[/] Report written to [bold]{output}[/]")
+        else:
+            cli_report(results, console)
 
 
 @main.command()
