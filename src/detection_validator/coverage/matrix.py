@@ -7,10 +7,10 @@ from typing import Any
 
 from detection_validator.normalizer.schema import CanonicalDetection
 
-# Navigator layer schema version
+# Navigator layer schema version (layer format v4.5, ATT&CK v19.1)
 _NAV_VERSION = "4.5"
 _DOMAIN = "enterprise-attack"
-_ATTCK_VERSION = "14"
+_ATTCK_VERSION = "19.1"
 
 
 def _confidence_color(confidence: float) -> str:

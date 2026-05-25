@@ -72,18 +72,19 @@ _PACKAGE_ROOT = Path(__file__).parents[1]
 _DEFAULT_CACHE_DIR = _PACKAGE_ROOT / "intel" / "attack_cache"
 _DEFAULT_CONFIG_DIR = Path(__file__).parents[3] / "configs"  # repo root/configs
 
+_ATTCK_VERSION = "19.1"
+_STIX_BASE = (
+    "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master"
+)
 _STIX_URLS: dict[str, str] = {
     "enterprise-attack": (
-        "https://raw.githubusercontent.com/mitre/cti/master/"
-        "enterprise-attack/enterprise-attack.json"
+        f"{_STIX_BASE}/enterprise-attack/enterprise-attack-{_ATTCK_VERSION}.json"
     ),
     "mobile-attack": (
-        "https://raw.githubusercontent.com/mitre/cti/master/"
-        "mobile-attack/mobile-attack.json"
+        f"{_STIX_BASE}/mobile-attack/mobile-attack-{_ATTCK_VERSION}.json"
     ),
     "ics-attack": (
-        "https://raw.githubusercontent.com/mitre/cti/master/"
-        "ics-attack/ics-attack.json"
+        f"{_STIX_BASE}/ics-attack/ics-attack-{_ATTCK_VERSION}.json"
     ),
 }
 
