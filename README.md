@@ -3,9 +3,9 @@
 Multi-SIEM detection validation platform. Simulate CVE-based attacks, capture real auditd telemetry, and validate detection rules against live SIEM data — all on a MacBook M1.
 
 ```
-dv attack --cve CVE-2021-44228 --target vagrant --watch
+dv attack  --cve CVE-2021-44228 --target vagrant --watch
 dv validate examples/detections/sigma/ --since 1 --format json | dv report
-dv validate examples/detections/sigma/ --since 1 --format json | dv report --format html -o report.html
+dv match   --events events.jsonl examples/detections/sigma/ --since 0 --format json | dv report --format html -o report.html
 dv cve-coverage --cve CVE-2021-44228 --detections mapped.jsonl
 ```
 
@@ -28,7 +28,8 @@ Vagrant VM (Ubuntu 22.04)          Mac host
 1. **`dv attack`** sends simulated exploit steps to the Vagrant VM. The victim agent executes them and writes audit events to `/var/log/audit/audit-events.jsonl`.
 2. **Vector** ships those events to OpenSearch and Splunk on the Mac host.
 3. **`dv validate`** loads your Sigma/Splunk/KQL detection rules, queries each SIEM for matching events, and reports PASS/FAIL per rule.
-4. **`dv report`** takes those results and renders them as a CLI summary, SARIF file, or self-contained HTML page.
+4. **`dv match`** does the same evaluation entirely offline — no SIEM needed. Point it at a raw JSONL event file and it returns identical results in milliseconds.
+5. **`dv report`** takes results from either command and renders them as a CLI summary, SARIF file, or self-contained HTML page.
 
 ---
 
@@ -206,6 +207,73 @@ dv validate examples/detections/sigma/ --format json | python3 -m json.tool
 # Write updated JSONL with validation_status field
 dv validate examples/detections/sigma/ -o validated.jsonl
 ```
+
+---
+
+## Step 4b — Match offline (no SIEM needed)
+
+`dv match` evaluates the same rules against a local JSONL file instead of querying a live SIEM. Use it in CI, for replaying captured events, or when the Docker stack isn't running.
+
+### Export events from the Vagrant VM
+
+```bash
+vagrant ssh -c "sudo cat /var/log/audit/audit-events.jsonl" > events.jsonl
+```
+
+### Export events from OpenSearch
+
+```bash
+curl -sk -u admin:"$OPENSEARCH_INITIAL_ADMIN_PASSWORD" \
+  "https://localhost:9200/dv-telemetry-*/_search?size=1000" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":{"term":{"source.keyword":"auditd-agent"}}}' \
+  | python3 -c "
+import json, sys
+for h in json.load(sys.stdin)['hits']['hits']:
+    print(json.dumps(h['_source']))
+" > events.jsonl
+```
+
+### Run the match
+
+```bash
+dv match --events events.jsonl examples/detections/sigma/ --since 2
+```
+
+Output is identical to `dv validate`:
+
+```
+ Rule                       Techniques              Hits  Source  Status
+ LSASS Memory Dump          T1003.001                  0  local   ✗ FAIL
+ Log4Shell JNDI Injection   T1190, T1059.004           8  local   ✓ PASS
+   T1190
+ PrintNightmare Spooler     T1068, T1547.012           4  local   ✓ PASS
+   setuid(0) attempt, current uid: 0
+ ProxyLogon Exchange SSRF   T1190, T1505.003           6  local   ✓ PASS
+ Test                       T1499, T1059.004           5  local   ✓ PASS
+   /bin/bash -c curl -sk http://127.0.0.1:8080/ ...
+
+Results: 7 rule(s)  4 PASS  3 FAIL  0 ERROR  0 SKIP  (0.0s)
+```
+
+Note the `(0.0s)` — 18,000 events evaluated in milliseconds with no network round-trips.
+
+### Pipe into dv report
+
+```bash
+dv match --events events.jsonl examples/detections/sigma/ --since 0 --format json | dv report
+dv match --events events.jsonl examples/detections/sigma/ --since 0 --format json | dv report --format html -o report.html
+```
+
+### validate vs match
+
+| | `dv validate` | `dv match` |
+|---|---|---|
+| Event source | Live SIEM query | Local JSONL file |
+| Requires SIEMs running | Yes | No |
+| Tests full ingestion pipeline | Yes | No |
+| Speed | ~1–2 s (network) | < 0.1 s (in-memory) |
+| Works in offline CI | No | Yes |
 
 ---
 
@@ -419,7 +487,8 @@ Ready-to-use rules under `examples/detections/`:
 ```
 ┌─ CLI ──────────────────────────────────────────────────────────┐
 │  dv attack       — simulate CVE exploit steps on victim        │
-│  dv validate     — query SIEM for rule hits, report PASS/FAIL  │
+│  dv validate     — query live SIEM, report PASS/FAIL per rule  │
+│  dv match        — same evaluation offline against a JSONL file│
 │  dv report       — render results as CLI / SARIF / HTML        │
 │  dv ingest       — parse Sigma/Splunk/KQL/YARA/EQL to JSONL    │
 │  dv map          — map rules to ATT&CK techniques              │
