@@ -1,56 +1,36 @@
 # syntax=docker/dockerfile:1.7
-# Ubuntu victim node with auditd, Sysmon for Linux, and Falco.
-# Pin digests: run `make pin-digests` to update.
-ARG UBUNTU_IMAGE=ubuntu:24.04
-ARG BUILDPLATFORM
-ARG TARGETPLATFORM
+# Ubuntu victim node — auditd + Python JSON converter → stdout → Vector
+ARG UBUNTU_IMAGE=ubuntu:22.04
+ARG TARGETPLATFORM=linux/arm64
 
-FROM --platform=${BUILDPLATFORM} ${UBUNTU_IMAGE} AS downloader
-
-ARG SYSMON_VERSION=1.3.3
-ARG TARGETARCH
-
-RUN apt-get update -qq && apt-get install -y --no-install-recommends \
-    curl ca-certificates && rm -rf /var/lib/apt/lists/*
-
-# Download Sysmon for Linux binary
-RUN ARCH=$([ "${TARGETARCH}" = "arm64" ] && echo "arm64" || echo "x86_64") && \
-    curl -fsSL \
-      "https://github.com/Sysinternals/SysmonForLinux/releases/download/${SYSMON_VERSION}/sysmon_${SYSMON_VERSION}_linux_${ARCH}.tar.gz" \
-      -o /tmp/sysmon.tar.gz 2>/dev/null || \
-    curl -fsSL \
-      "https://packages.microsoft.com/repos/microsoft-ubuntu-noble-prod/pool/main/s/sysmonforlinux/sysmonforlinux_${SYSMON_VERSION}_${ARCH}.deb" \
-      -o /tmp/sysmon.deb 2>/dev/null || true
-
-# ---- runtime ---------------------------------------------------------------
-FROM --platform=${TARGETPLATFORM} ${UBUNTU_IMAGE} AS runtime
+FROM --platform=${TARGETPLATFORM} ${UBUNTU_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
-    auditd audispd-plugins \
-    curl ca-certificates gnupg \
-    python3 python3-pip \
-    rsyslog \
+    auditd \
+    python3 \
+    procps \
+    iproute2 \
+    curl \
+    wget \
+    netcat-openbsd \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Falco via apt (official repo)
-RUN curl -fsSL https://falco.org/repo/falcosecurity-packages.asc | \
-    gpg --dearmor -o /usr/share/keyrings/falco-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/falco-archive-keyring.gpg] \
-      https://download.falco.org/packages/deb stable main" \
-      > /etc/apt/sources.list.d/falcosecurity.list && \
-    apt-get update -qq && \
-    apt-get install -y --no-install-recommends falco || true && \
-    rm -rf /var/lib/apt/lists/*
+# Create non-root victim user (used to generate realistic process events)
+RUN groupadd -r victim && useradd -r -g victim -u 1001 -m -s /bin/bash victim && \
+    echo "victim ALL=(ALL) NOPASSWD: /bin/id, /usr/bin/id" >> /etc/sudoers
 
-COPY --from=downloader /tmp/sysmon* /opt/sysmon/ 2>/dev/null || true
-COPY configs/audit.rules /etc/audit/rules.d/dv-audit.rules 2>/dev/null || true
+COPY audit.rules /etc/audit/rules.d/dv-audit.rules
+COPY audit-to-json.py /opt/audit-to-json.py
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh /opt/audit-to-json.py
 
-RUN groupadd -r victim && useradd -r -g victim -u 1001 -m victim
+# Ensure audit log dir exists
+RUN mkdir -p /var/log/audit
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD pgrep auditd || exit 1
+    CMD pgrep -x auditd > /dev/null || pgrep -f audit-to-json > /dev/null || exit 1
 
-ENTRYPOINT ["/usr/sbin/auditd"]
-CMD ["-f", "-l"]
+ENTRYPOINT ["/entrypoint.sh"]

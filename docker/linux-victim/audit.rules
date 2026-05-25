@@ -1,0 +1,65 @@
+## detection-validator audit rules
+## Captures process execution, network activity, privilege escalation,
+## and sensitive file access — covering key ATT&CK techniques.
+
+# Delete existing rules and set buffer size
+-D
+-b 8192
+
+# Failures: 1=log, 2=panic
+-f 1
+
+# ── Execution (T1059 - Command and Scripting Interpreter) ────────────────────
+-a always,exit -F arch=b64 -S execve -k exec
+-a always,exit -F arch=b32 -S execve -k exec
+
+# Track interpreter launches specifically
+-w /bin/bash -p x -k shell_exec
+-w /bin/sh -p x -k shell_exec
+-w /bin/dash -p x -k shell_exec
+-w /usr/bin/python3 -p x -k interpreter_exec
+-w /usr/bin/python -p x -k interpreter_exec
+-w /usr/bin/perl -p x -k interpreter_exec
+
+# ── Network connections (T1190 - Exploit Public-Facing Application) ──────────
+-a always,exit -F arch=b64 -S connect -k network_connect
+-a always,exit -F arch=b32 -S connect -k network_connect
+-a always,exit -F arch=b64 -S accept -k network_accept
+-a always,exit -F arch=b32 -S accept -k network_accept
+
+# ── Privilege escalation (T1068, T1548) ─────────────────────────────────────
+-a always,exit -F arch=b64 -S setuid -S setgid -S setreuid -S setregid -k priv_change
+-a always,exit -F arch=b32 -S setuid -S setgid -S setreuid -S setregid -k priv_change
+-a always,exit -F arch=b64 -S chmod -S fchmod -S fchmodat -k file_permission
+-w /usr/bin/sudo -p x -k sudo_exec
+-w /usr/bin/su -p x -k su_exec
+
+# ── Persistence (T1547 - Boot/Logon Autostart) ───────────────────────────────
+-a always,exit -F arch=b64 -S init_module -S finit_module -k module_load
+-w /etc/crontab -p wa -k cron_modify
+-w /etc/cron.d -p wa -k cron_modify
+-w /var/spool/cron -p wa -k cron_modify
+-w /etc/rc.local -p wa -k startup_modify
+
+# ── Credential access (T1078, T1552) ────────────────────────────────────────
+-w /etc/passwd -p rwa -k sensitive_file
+-w /etc/shadow -p rwa -k sensitive_file
+-w /etc/sudoers -p rwa -k sensitive_file
+-w /etc/ssh -p rwa -k ssh_config
+-w /root/.ssh -p rwa -k ssh_key
+
+# ── Defense evasion (T1070 - Indicator Removal) ─────────────────────────────
+-a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -k file_delete
+-w /var/log -p wa -k log_modify
+
+# ── Lateral movement / discovery (T1049, T1082) ──────────────────────────────
+-w /usr/bin/ss -p x -k network_discovery
+-w /usr/bin/netstat -p x -k network_discovery
+-w /usr/bin/nmap -p x -k network_scan
+-w /bin/uname -p x -k system_info
+-w /usr/bin/id -p x -k identity_check
+-w /usr/bin/whoami -p x -k identity_check
+-w /etc/os-release -p r -k os_info
+
+# Make config immutable (optional — comment out for easier rule reloads)
+# -e 2

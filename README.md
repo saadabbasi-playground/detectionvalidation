@@ -107,6 +107,7 @@ dv-opensearch-dashboards          Up X minutes (healthy)
 dv-redis                          Up X minutes (healthy)
 dv-vector                         Up X minutes (healthy)
 detectval-splunk                  Up X minutes (healthy)
+dv-linux-victim                   Up X minutes (healthy)   ← optional, see below
 ```
 
 **7. Run the Python CLI**
@@ -302,6 +303,64 @@ your rules is the most reliable way to ensure coverage is counted.
 
 ---
 
+## Linux victim container
+
+`dv-linux-victim` is a Ubuntu 22.04 container that generates realistic security
+telemetry. It runs `auditd` and streams events as JSON to stdout, which Vector
+picks up via the Docker socket and forwards to OpenSearch and Splunk.
+
+### What it captures
+
+| Audit key | ATT&CK technique | Example |
+|---|---|---|
+| `exec` | T1059 Command & Scripting | Any `execve` syscall |
+| `shell_exec` | T1059.004 Unix Shell | `/bin/bash`, `/bin/sh` launches |
+| `network_connect` | T1190 Exploit Public-Facing App | `connect()` syscalls |
+| `priv_change` | T1068 Privilege Escalation | `setuid()`, `setgid()` |
+| `sensitive_file` | T1552 Credentials in Files | Reads to `/etc/shadow`, `/etc/sudoers` |
+| `sudo_exec` | T1548 Abuse Elevation Control | `/usr/bin/sudo` execution |
+| `cron_modify` | T1547.003 Cron | Writes to `/etc/cron.d` |
+| `module_load` | T1547.006 Kernel Modules | `init_module` syscall |
+
+### Starting the container
+
+```bash
+# Build the image (once)
+docker build --platform linux/arm64 -t detection-validator/linux-victim:dev docker/linux-victim/
+
+# Start on the detectval-lab network (Vector picks up stdout automatically)
+docker run -d --name dv-linux-victim \
+  --network detectval-lab \
+  --cap-add AUDIT_WRITE --cap-add AUDIT_CONTROL --cap-add SYS_PTRACE \
+  --security-opt seccomp:unconfined \
+  -e HOSTNAME=linux-victim \
+  detection-validator/linux-victim:dev
+```
+
+> **Mac M1:** The Linux kernel inside Docker Desktop's LinuxKit VM does not expose
+> the audit subsystem to containers by default. The victim falls back to
+> **synthetic-event mode**, which emits the same JSON schema at 10-second intervals —
+> enough to validate the full pipeline (Vector → OpenSearch/Splunk) without real kernel
+> hooks. Real auditd events require a native Linux host.
+
+### Verifying events reach the SIEMs
+
+```bash
+# OpenSearch: count events from the victim
+curl -sk -u admin:$OPENSEARCH_INITIAL_ADMIN_PASSWORD \
+  "https://localhost:9200/dv-telemetry-*/_count" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":{"term":{"container.keyword":"dv-linux-victim"}}}'
+
+# Splunk: search via mock REST API
+curl -s http://localhost:8000/services/search/jobs \
+  -X POST -H "Authorization: Splunk detectval-hec-token" \
+  -d "search=dv-linux-victim" \
+  -H "Content-Type: application/x-www-form-urlencoded"
+```
+
+---
+
 ## Architecture
 
 ```
@@ -312,11 +371,11 @@ your rules is the most reliable way to ensure coverage is counted.
         │                    │                    │
 ┌─ lab ─┴──────┐    ┌────────┴──────┐    ┌───────┴──────────────┐
 │  attacker    │    │  linux-victim │    │  atomic-runner        │
-│  (Kali-slim) │    │  (auditd +    │    │  (invoke-atomicredteam│
-│  nuclei,ART  │    │   Sysmon,Falco│    │   + ART library)     │
+│  (Kali-slim) │    │  (auditd →    │    │  (invoke-atomicredteam│
+│  nuclei,ART  │    │   JSON stdout │    │   + ART library)     │
 └──────────────┘    └───────────────┘    └──────────────────────┘
-        │
-┌─ siem ─┴──────────────────────────────────────────────────────┐
+        │                    │ docker_logs
+┌─ siem ─┴──────────────────┴──────────────────────────────────┐
 │  opensearch / elastic / splunk / sentinel / chronicle / wazuh  │
 │  + vector (shipper)  + grafana (dashboards)                    │
 └────────────────────────────────────────────────────────────────┘

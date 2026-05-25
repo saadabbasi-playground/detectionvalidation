@@ -50,15 +50,14 @@ services:
     security_opt:
       - seccomp:unconfined
     environment:
-      FALCO_OUTPUT: stdout
-      AUDITD_LOG_DIR: /var/log/audit
+      HOSTNAME: linux-victim
     volumes:
       - victim-logs:/var/log/audit
-      - ../configs:/etc/dv-configs:ro
     networks:
       - dv-net
+      - detectval-lab
     healthcheck:
-      test: ["CMD", "pgrep", "auditd"]
+      test: ["CMD", "pgrep", "-f", "audit-to-json"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -97,6 +96,13 @@ services:
       resources:
         limits:
           memory: ${DV_RUNNER_MEMORY:-256m}
+
+networks:
+  dv-net:
+    driver: bridge
+  detectval-lab:
+    external: true
+    name: detectval-lab
 
 volumes:
   lab-results:
