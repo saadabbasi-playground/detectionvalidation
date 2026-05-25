@@ -1,0 +1,18 @@
+[Unit]
+Description=DetectionValidator Victim Agent
+After=network.target auditd.service
+Wants=auditd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/victim-agent.py
+Restart=on-failure
+RestartSec=5s
+Environment=AGENT_PORT=9099
+Environment=EVENTS_FILE=/var/log/audit/audit-events.jsonl
+Environment=AUDIT_LOG=/var/log/audit/audit.log
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

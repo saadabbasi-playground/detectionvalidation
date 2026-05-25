@@ -1,0 +1,60 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# DetectionValidator — Ubuntu 22.04 ARM64 victim VM
+# Uses vagrant-qemu provider with Apple Hypervisor Framework (HVF) acceleration.
+#
+# Prerequisites (run once):
+#   brew install vagrant
+#   vagrant plugin install vagrant-qemu
+#
+# Usage:
+#   vagrant up          — create + provision VM
+#   vagrant ssh         — shell into VM
+#   vagrant halt        — stop VM
+#   vagrant destroy -f  — remove VM entirely
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "perk/ubuntu-2204-arm64"
+  config.vm.hostname = "dv-victim"
+
+  config.vm.provider :qemu do |qemu|
+    qemu.machine    = "virt,accel=hvf,highmem=off"
+    qemu.cpu        = "cortex-a72"
+    qemu.memory     = "2048"
+    qemu.smp        = "cpus=2"
+    qemu.disk_size  = "20G"
+    qemu.ssh_port   = 50022
+    # Append port forward to the existing net0 netdev (same SLiRP instance as SSH).
+    # Adding a second -netdev user creates a second SLiRP with the same 10.0.2.0/24
+    # subnet, which breaks net0 forwarding entirely.
+    # Host 9098 → guest 9099, leaving 9099 free for the Docker victim container.
+    qemu.extra_netdev_args = "hostfwd=tcp:127.0.0.1:9098-:9099"
+    qemu.extra_qemu_args   = []
+  end
+
+  config.vm.provision "shell", path: "provision.sh"
+
+  # Copy config files into VM
+  config.vm.provision "file", source: "files/audit.rules",       destination: "/tmp/dv-audit.rules"
+  config.vm.provision "file", source: "files/victim-agent.py",   destination: "/tmp/victim-agent.py"
+  config.vm.provision "file", source: "files/vector.toml",       destination: "/tmp/vector.toml"
+  config.vm.provision "file", source: "files/victim-agent.service", destination: "/tmp/victim-agent.service"
+
+  config.vm.provision "shell", inline: <<-SHELL
+    install -m 644 /tmp/dv-audit.rules      /etc/audit/rules.d/dv-audit.rules
+    install -m 755 /tmp/victim-agent.py     /opt/victim-agent.py
+    install -m 644 /tmp/vector.toml         /etc/vector/vector.toml
+    install -m 644 /tmp/victim-agent.service /etc/systemd/system/victim-agent.service
+
+    augenrules --load 2>/dev/null || auditctl -R /etc/audit/rules.d/dv-audit.rules
+
+    systemctl daemon-reload
+    systemctl enable --now victim-agent
+    systemctl enable --now vector
+    echo "=== DetectionValidator victim VM ready ==="
+    echo "    Victim agent : http://localhost:9099/health"
+    echo "    Audit log    : /var/log/audit/audit-events.jsonl"
+    echo "    Vector config: /etc/vector/vector.toml"
+  SHELL
+end
