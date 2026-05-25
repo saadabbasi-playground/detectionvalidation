@@ -1,0 +1,24 @@
+title: Nmap Port Scan Detected
+id: d1e2f3a4-5678-90bc-def0-123456789abc
+status: experimental
+description: Detects Nmap network scanning activity based on network flow anomalies.
+author: Network Security
+date: 2024/02/01
+tags:
+    - attack.discovery
+    - attack.reconnaissance
+    - attack.T1046
+    - cim.Network_Traffic
+logsource:
+    product: zeek
+    service: conn
+detection:
+    selection:
+        resp_bytes: 0
+        duration|lt: 0.5
+    timeframe: 60s
+    condition: selection | count() by id.orig_h > 50
+falsepositives:
+    - Vulnerability scanners
+    - Authorized network assessments
+level: medium

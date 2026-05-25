@@ -1,0 +1,9 @@
+index=dns sourcetype=stream:dns
+| where NOT (query LIKE "%.microsoft.com" OR query LIKE "%.windows.com")
+| bucket _time span=1h
+| stats count, dc(query) as unique_queries, avg(bytes_in) as avg_bytes by src_ip, _time
+| where count > 100 AND unique_queries < 5
+| eval beacon_score = (count / unique_queries) * (1 / avg_bytes)
+| where beacon_score > 10
+| table _time, src_ip, count, unique_queries, avg_bytes, beacon_score
+| sort -beacon_score

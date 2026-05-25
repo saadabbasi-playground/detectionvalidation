@@ -1,0 +1,158 @@
+# Data-source / log-source correlation table
+#
+# Each entry fires when the detection's logsource matches AND the query
+# contains at least one keyword from the keywords list.
+#
+# Fields:
+#   log_sources : list of Sigma-style category/product/service values to match
+#                 (OR logic — any match fires the entry)
+#   keywords    : list of strings that must appear in the raw query (OR logic)
+#   techniques  : list of inferred technique IDs
+#   confidence  : base confidence 0-1
+#   note        : optional rationale
+
+hints:
+
+  # ─── process_creation correlations ─────────────────────────────────────────
+  - log_sources: [process_creation]
+    keywords: [certutil, certutil.exe]
+    techniques: [T1140, T1105]
+    confidence: 0.75
+
+  - log_sources: [process_creation]
+    keywords: [mshta, mshta.exe]
+    techniques: [T1218.005]
+    confidence: 0.85
+
+  - log_sources: [process_creation]
+    keywords: [regsvr32]
+    techniques: [T1218.010]
+    confidence: 0.80
+
+  - log_sources: [process_creation]
+    keywords: [rundll32]
+    techniques: [T1218.011]
+    confidence: 0.80
+
+  - log_sources: [process_creation]
+    keywords: [wmic, wmic.exe]
+    techniques: [T1047]
+    confidence: 0.80
+
+  - log_sources: [process_creation]
+    keywords: [powershell, pwsh]
+    techniques: [T1059.001]
+    confidence: 0.65
+    note: Generic powershell — refine via keyword hits for encoded/IEX patterns
+
+  - log_sources: [process_creation]
+    keywords: [cmd.exe, cmd /c]
+    techniques: [T1059.003]
+    confidence: 0.65
+
+  - log_sources: [process_creation]
+    keywords: [wscript, cscript]
+    techniques: [T1059.005]
+    confidence: 0.75
+
+  - log_sources: [process_creation]
+    keywords: [installutil, regasm, regsvcs]
+    techniques: [T1218.004]
+    confidence: 0.80
+
+  - log_sources: [process_creation]
+    keywords: [msiexec]
+    techniques: [T1218.007]
+    confidence: 0.75
+
+  - log_sources: [process_creation]
+    keywords: [ntdsutil]
+    techniques: [T1003.003]
+    confidence: 0.85
+
+  - log_sources: [process_creation]
+    keywords: [vssadmin]
+    techniques: [T1003.003, T1490]
+    confidence: 0.80
+
+  # ─── process_access correlations ────────────────────────────────────────────
+  - log_sources: [process_access]
+    keywords: [lsass.exe]
+    techniques: [T1003.001]
+    confidence: 0.85
+
+  - log_sources: [process_access]
+    keywords: [GrantedAccess, OpenProcess]
+    techniques: [T1003.001, T1055]
+    confidence: 0.70
+
+  # ─── file_creation correlations ─────────────────────────────────────────────
+  - log_sources: [file_creation, file_event]
+    keywords: [.yar, .ps1, .vbs, .hta]
+    techniques: [T1105]
+    confidence: 0.60
+
+  - log_sources: [file_creation, file_event]
+    keywords: [shadow, vss]
+    techniques: [T1003.003]
+    confidence: 0.70
+
+  # ─── network_connection / DNS correlations ────────────────────────────────────
+  - log_sources: [network_connection, dns, zeek:conn, zeek:dns]
+    keywords: [beacon, beacon_score, dc(query)]
+    techniques: [T1071.004, T1568.002]
+    confidence: 0.75
+
+  - log_sources: [network_connection]
+    keywords: [bytes_out, exfil, bytes > ]
+    techniques: [T1041]
+    confidence: 0.65
+
+  # ─── registry correlations ────────────────────────────────────────────────────
+  - log_sources: [registry_event, registry_set]
+    keywords: [Run, RunOnce, CurrentVersion\\Run]
+    techniques: [T1547.001]
+    confidence: 0.85
+
+  - log_sources: [registry_event, registry_set]
+    keywords: [HKLM\\SAM, HKLM\\Security]
+    techniques: [T1003.002]
+    confidence: 0.80
+
+  # ─── security_event / windows correlations ───────────────────────────────────
+  - log_sources: [security, windows_event_log]
+    keywords: [EventCode=4625, EventID=4625, "4625"]
+    techniques: [T1110]
+    confidence: 0.75
+
+  - log_sources: [security, windows_event_log]
+    keywords: [EventCode=4688, EventID=4688, "4688"]
+    techniques: [T1059]
+    confidence: 0.50
+    note: Process creation — needs further refinement from query content
+
+  - log_sources: [security, windows_event_log]
+    keywords: [EventCode=7045, EventID=7045, "7045", PSEXESVC, ServiceName]
+    techniques: [T1021.002, T1543.003]
+    confidence: 0.80
+
+  - log_sources: [security, windows_event_log]
+    keywords: [EventCode=4697, EventID=4697, "4697"]
+    techniques: [T1543.003]
+    confidence: 0.75
+
+  # ─── cloud / Azure correlations ──────────────────────────────────────────────
+  - log_sources: [AuditLogs, azure_audit]
+    keywords: [AddMember, RoleAssignment]
+    techniques: [T1098]
+    confidence: 0.75
+
+  - log_sources: [SigninLogs, azure_signin]
+    keywords: [ResultType, failed, "4", spray]
+    techniques: [T1110.003]
+    confidence: 0.70
+
+  - log_sources: [AWSCloudTrail, cloudtrail]
+    keywords: [GetObject, ListBuckets, s3]
+    techniques: [T1530]
+    confidence: 0.75

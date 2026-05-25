@@ -1,0 +1,20 @@
+rule_id: GEN-2024-001
+title: Outbound Connection to Known C2 Infrastructure
+desc: |
+  Detects network connections to known command-and-control IP ranges.
+  Extracted from threat intelligence feeds.
+risk_level: high
+author: Threat Intel Team
+os:
+  - windows
+  - linux
+detection:
+  search: "dst_ip IN threat_intel_c2_list AND bytes_out > 1024"
+tags:
+  attack:
+    - T1071.001
+    - T1041
+  source: threat_intel_feed
+false_positives:
+  - CDN edge nodes that share IP ranges
+  - Miscategorized legitimate services

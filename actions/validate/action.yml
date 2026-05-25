@@ -1,0 +1,86 @@
+name: Validate Detections
+description: |
+  Run detection-validator against a rules directory and upload results
+  as SARIF to GitHub Code Scanning. Designed to be dropped into any
+  detection-as-code repository.
+
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  rules-path:
+    description: "Path to the detection rules directory (relative to repo root)"
+    required: false
+    default: "."
+  siem:
+    description: "Target SIEM: opensearch | elastic | splunk | sentinel | chronicle | wazuh"
+    required: false
+    default: "opensearch"
+  output-format:
+    description: "Report format: sarif | json | html | slack"
+    required: false
+    default: "sarif"
+  profile:
+    description: "Resource profile: tiny | standard | full"
+    required: false
+    default: "tiny"
+  dv-image:
+    description: "detection-validator core image to use"
+    required: false
+    default: "ghcr.io/detection-validator/core:latest"
+  fail-on-gap:
+    description: "Fail if ATT&CK coverage gaps are detected"
+    required: false
+    default: "false"
+  upload-sarif:
+    description: "Upload SARIF to GitHub Code Scanning"
+    required: false
+    default: "true"
+
+outputs:
+  coverage-score:
+    description: "ATT&CK coverage score (0-100)"
+    value: ${{ steps.validate.outputs.coverage-score }}
+  report-path:
+    description: "Path to the generated report file"
+    value: ${{ steps.validate.outputs.report-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Pull detection-validator image
+      shell: bash
+      run: docker pull ${{ inputs.dv-image }} || true
+
+    - name: Run validation
+      id: validate
+      shell: bash
+      run: |
+        docker run --rm \
+          -v "${{ github.workspace }}/${{ inputs.rules-path }}:/rules:ro" \
+          -e SIEM_TYPE=${{ inputs.siem }} \
+          ${{ inputs.dv-image }} \
+          validate /rules \
+            --siem ${{ inputs.siem }} \
+            --format ${{ inputs.output-format }} \
+            --output /tmp/dv-results.${{ inputs.output-format }}
+        echo "coverage-score=0" >> "$GITHUB_OUTPUT"
+        echo "report-path=/tmp/dv-results.${{ inputs.output-format }}" >> "$GITHUB_OUTPUT"
+
+    - name: Upload SARIF to Code Scanning
+      if: inputs.upload-sarif == 'true' && inputs.output-format == 'sarif'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: /tmp/dv-results.sarif
+        category: detection-validator
+
+    - name: Upload report artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: dv-report-${{ inputs.siem }}-${{ github.run_id }}
+        path: /tmp/dv-results.*
+        retention-days: 30

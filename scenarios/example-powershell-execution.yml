@@ -1,0 +1,26 @@
+name: PowerShell Encoded Command Execution
+description: |
+  Simulates a threat actor using PowerShell with a base64-encoded payload —
+  a common technique for obfuscating command execution (T1059.001).
+author: detection-validator
+severity: high
+mitre:
+  - T1059.001  # Command and Scripting Interpreter: PowerShell
+
+steps:
+  - id: step-1
+    description: Execute PowerShell with encoded command
+    technique: T1059.001
+    art_test: 1
+    timeout: 60
+    expected_alert: true
+
+  - id: step-2
+    description: Execute PowerShell with -NoProfile and -WindowStyle Hidden
+    technique: T1059.001
+    art_test: 2
+    timeout: 60
+    expected_alert: true
+
+cleanup: true
+platform: [linux, windows]

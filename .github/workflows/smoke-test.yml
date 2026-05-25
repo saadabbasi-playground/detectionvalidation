@@ -1,0 +1,106 @@
+name: Smoke Test
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke-amd64:
+    name: Smoke test — ubuntu (amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Make dv executable
+        run: chmod +x ./dv
+
+      - name: Run doctor
+        run: ./dv doctor
+
+      - name: Build core image
+        run: docker buildx bake --file docker-bake.hcl --set "core.output=type=docker" core
+
+      - name: Start core stack
+        run: ./dv up core --profile tiny --no-detach &
+        timeout-minutes: 5
+
+      - name: Wait for core healthcheck
+        run: |
+          for i in $(seq 1 30); do
+            if docker ps --filter name=dv-core --filter health=healthy --quiet | grep -q .; then
+              echo "core is healthy"; exit 0
+            fi
+            sleep 5
+          done
+          docker compose --project-directory . -f compose/docker-compose.yml logs
+          exit 1
+
+      - name: Validate ./dv status
+        run: ./dv status
+
+      - name: Teardown
+        if: always()
+        run: ./dv down core
+
+  smoke-arm64:
+    name: Smoke test — ubuntu arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Make dv executable
+        run: chmod +x ./dv
+
+      - name: Run doctor (ARM)
+        run: ./dv doctor
+
+      - name: Build core image (ARM)
+        run: docker buildx bake --file docker-bake.hcl --set "core.output=type=docker" --set "core.platforms=linux/arm64" core
+
+      - name: Start core stack (ARM + tiny profile)
+        run: ./dv up core --profile tiny --no-detach &
+        timeout-minutes: 5
+
+      - name: Wait for core healthcheck
+        run: |
+          for i in $(seq 1 30); do
+            if docker ps --filter name=dv-core --filter health=healthy --quiet | grep -q .; then
+              echo "core is healthy"; exit 0
+            fi
+            sleep 5
+          done
+          docker compose --project-directory . -f compose/docker-compose.yml logs
+          exit 1
+
+      - name: Teardown
+        if: always()
+        run: ./dv down core
+
+  python-tests:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run tests
+        run: uv run pytest --tb=short
+
+      - name: Lint
+        run: uv run ruff check src/

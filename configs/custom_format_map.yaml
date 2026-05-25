@@ -1,0 +1,27 @@
+# GenericYAMLParser field mapping configuration
+#
+# Maps source YAML field paths (dot-notation for nested keys) to canonical
+# CanonicalDetection fields.  Extend or override this to support any
+# proprietary YAML detection format.
+#
+# field_map keys are canonical field names; values are source field paths.
+# Use dot notation for nested fields:  "tags.attack_ids"  means  rule["tags"]["attack_ids"]
+
+field_map:
+  id: rule_id
+  name: title
+  description: desc
+  author: author
+  severity: risk_level
+  query: detection.search
+  techniques: tags.attack
+  platforms: os
+  tags: tags.source
+  false_positives: false_positives
+  version: version
+
+defaults:
+  source_format: custom
+  severity: medium
+  language: unknown
+  author: unknown

@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+
+# Virtual environments
+.venv/
+.test-venv/
+venv/
+env/
+
+# Intel / cache files (populated at runtime)
+src/detection_validator/intel/attack_cache/*.json.gz
+src/detection_validator/intel/attack_cache/*.meta
+src/detection_validator/intel/cve_cache/*.json.gz
+src/detection_validator/intel/cve_cache/*.json
+src/detection_validator/intel/cve_cache/*.meta
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+
+# Secrets / env overrides
+.env
+*.env.local

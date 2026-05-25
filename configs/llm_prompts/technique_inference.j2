@@ -1,0 +1,57 @@
+You are a MITRE ATT&CK expert. Analyze the following detection rule and identify the most relevant ATT&CK Enterprise techniques.
+
+## Detection Rule
+
+**Name**: {{ detection.name }}
+
+**Description**: {{ detection.description or "(none)" }}
+
+**Source Format**: {{ detection.source_format }}
+
+**Log Sources**:
+{% for ls in detection.log_sources -%}
+- product={{ ls.product or "?" }}, category={{ ls.category or "?" }}, service={{ ls.service or "?" }}
+{% else -%}
+(none specified)
+{% endfor %}
+
+**Platforms**: {{ detection.platforms | map("string") | join(", ") or "(unknown)" }}
+
+**Detection Logic** ({{ detection.detection_logic.language or "unknown" }}):
+```
+{{ detection.detection_logic.raw | truncate(2000, True, "... [truncated]") }}
+```
+
+{% if candidate_summary %}
+## ATT&CK Technique Hints (pre-filtered)
+The following techniques were already suggested by keyword heuristics and may be relevant:
+{% for c in candidate_summary -%}
+- {{ c.technique_id }} ({{ c.tactic }}): {{ c.reasoning }}
+{% endfor %}
+{% endif %}
+
+## Instructions
+
+Return a JSON object with **exactly** this structure — no markdown, no prose, just JSON:
+
+```json
+{
+  "candidates": [
+    {
+      "technique_id": "T1234.567",
+      "tactic": "execution",
+      "confidence": 0.95,
+      "reasoning": "One sentence explaining why this technique applies."
+    }
+  ]
+}
+```
+
+Rules:
+1. Include at most {{ max_candidates }} candidates.
+2. Only include techniques with confidence ≥ {{ min_confidence }}.
+3. Use exact ATT&CK IDs (T####.### for sub-techniques, T#### for base techniques).
+4. `tactic` must be a valid ATT&CK tactic slug (e.g., "execution", "defense-evasion").
+5. Do not invent technique IDs — only use real ATT&CK Enterprise techniques.
+6. Prefer sub-techniques (T1059.001) over base techniques (T1059) when the evidence is specific.
+7. `confidence` is a float from 0.0 to 1.0.

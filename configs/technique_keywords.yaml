@@ -1,0 +1,286 @@
+# ATT&CK technique keyword lookup — community-editable
+#
+# Each entry maps a keyword/pattern in detection text to one or more technique IDs.
+# Fields:
+#   keyword   : string to search for (case-insensitive substring match by default)
+#   techniques: one ID string or list of IDs
+#   regex     : if true, treat keyword as a Python regex (default: false)
+#   confidence: base confidence score 0-1 (default: 0.65)
+#   note      : optional human-readable rationale
+
+entries:
+
+  # ─── T1059 Command and Scripting Interpreter ───────────────────────────────
+  - keyword: "powershell -enc"
+    techniques: T1059.001
+    confidence: 0.85
+
+  - keyword: "powershell -encodedcommand"
+    techniques: T1059.001
+    confidence: 0.90
+
+  - keyword: "IEX("
+    techniques: T1059.001
+    confidence: 0.85
+
+  - keyword: "invoke-expression"
+    techniques: T1059.001
+    confidence: 0.80
+
+  - keyword: "invoke-webrequest"
+    techniques: [T1059.001, T1105]
+    confidence: 0.75
+
+  - keyword: "net.webclient"
+    techniques: [T1059.001, T1105]
+    confidence: 0.75
+
+  - keyword: "downloadstring"
+    techniques: [T1059.001, T1105]
+    confidence: 0.75
+
+  - keyword: "cmd.exe /c"
+    techniques: T1059.003
+    confidence: 0.70
+
+  - keyword: "wscript"
+    techniques: T1059.005
+    confidence: 0.75
+
+  - keyword: "cscript"
+    techniques: T1059.005
+    confidence: 0.75
+
+  - keyword: "bash -i"
+    techniques: T1059.004
+    confidence: 0.80
+
+  - keyword: "python -c"
+    techniques: T1059.006
+    confidence: 0.80
+
+  - keyword: "perl -e"
+    techniques: T1059.006
+    confidence: 0.75
+
+  # ─── T1055 Process Injection ────────────────────────────────────────────────
+  - keyword: "VirtualAllocEx"
+    techniques: T1055
+    confidence: 0.75
+
+  - keyword: "WriteProcessMemory"
+    techniques: T1055
+    confidence: 0.85
+
+  - keyword: "CreateRemoteThread"
+    techniques: T1055.003
+    confidence: 0.90
+
+  - keyword: "SetWindowsHookEx"
+    techniques: T1055.011
+    confidence: 0.80
+
+  - keyword: "QueueUserAPC"
+    techniques: T1055.004
+    confidence: 0.80
+
+  - keyword: "NtUnmapViewOfSection"
+    techniques: T1055.012
+    confidence: 0.80
+    note: Process hollowing indicator
+
+  # ─── T1003 Credential Dumping ───────────────────────────────────────────────
+  - keyword: "mimikatz"
+    techniques: T1003.001
+    confidence: 0.95
+
+  - keyword: "sekurlsa"
+    techniques: T1003.001
+    confidence: 0.95
+
+  - keyword: "lsadump"
+    techniques: [T1003.001, T1003.003]
+    confidence: 0.90
+
+  - keyword: "privilege::debug"
+    techniques: T1003.001
+    confidence: 0.90
+
+  - keyword: "ntdsutil"
+    techniques: T1003.003
+    confidence: 0.90
+
+  - keyword: "vssadmin create shadow"
+    techniques: [T1003.003, T1490]
+    confidence: 0.85
+
+  - keyword: "reg save.*sam"
+    techniques: T1003.002
+    regex: true
+    confidence: 0.85
+
+  # ─── T1218 Signed Binary Proxy Execution ────────────────────────────────────
+  - keyword: "mshta"
+    techniques: T1218.005
+    confidence: 0.85
+
+  - keyword: "regsvr32"
+    techniques: T1218.010
+    confidence: 0.80
+
+  - keyword: "rundll32"
+    techniques: T1218.011
+    confidence: 0.80
+
+  - keyword: "certutil"
+    techniques: [T1140, T1218.013]
+    confidence: 0.75
+
+  - keyword: "wmic"
+    techniques: [T1047, T1218.010]
+    confidence: 0.75
+
+  - keyword: "msiexec"
+    techniques: T1218.007
+    confidence: 0.75
+
+  - keyword: "installutil"
+    techniques: T1218.004
+    confidence: 0.80
+
+  - keyword: "regasm"
+    techniques: T1218.009
+    confidence: 0.80
+
+  # ─── T1140 Deobfuscate/Decode Files ─────────────────────────────────────────
+  - keyword: "certutil -decode"
+    techniques: T1140
+    confidence: 0.90
+
+  - keyword: "certutil -urlcache"
+    techniques: [T1140, T1105]
+    confidence: 0.90
+
+  - keyword: "base64 -d"
+    techniques: T1140
+    confidence: 0.75
+
+  - keyword: "[convert]::frombase64"
+    techniques: T1140
+    confidence: 0.80
+
+  # ─── T1105 Ingress Tool Transfer ────────────────────────────────────────────
+  - keyword: "bitsadmin /transfer"
+    techniques: T1197
+    confidence: 0.85
+
+  - keyword: "wget "
+    techniques: T1105
+    confidence: 0.65
+
+  - keyword: "curl "
+    techniques: T1105
+    confidence: 0.60
+
+  # ─── T1047 WMI ──────────────────────────────────────────────────────────────
+  - keyword: "Win32_Process"
+    techniques: T1047
+    confidence: 0.80
+
+  - keyword: "WmiPrvSE"
+    techniques: T1047
+    confidence: 0.75
+
+  - keyword: "wmic process call create"
+    techniques: T1047
+    confidence: 0.90
+
+  # ─── T1021 Remote Services ──────────────────────────────────────────────────
+  - keyword: "PSEXESVC"
+    techniques: T1021.002
+    confidence: 0.90
+
+  - keyword: "psexec"
+    techniques: T1021.002
+    confidence: 0.85
+
+  - keyword: "net use \\\\"
+    techniques: T1021.002
+    confidence: 0.75
+
+  # ─── T1070 Indicator Removal ────────────────────────────────────────────────
+  - keyword: "wevtutil cl"
+    techniques: T1070.001
+    confidence: 0.90
+
+  - keyword: "clear-eventlog"
+    techniques: T1070.001
+    confidence: 0.85
+
+  - keyword: "del /f /q"
+    techniques: T1070.004
+    confidence: 0.60
+
+  # ─── T1110 Brute Force ──────────────────────────────────────────────────────
+  - keyword: "password spray"
+    techniques: T1110.003
+    confidence: 0.90
+
+  - keyword: "multiple failed"
+    techniques: T1110
+    confidence: 0.60
+
+  # ─── T1505 Server Software Component ───────────────────────────────────────
+  - keyword: "eval("
+    techniques: T1505.003
+    confidence: 0.65
+    note: Webshell indicator in server-side code
+
+  - keyword: "shell_exec"
+    techniques: T1505.003
+    confidence: 0.75
+
+  # ─── T1046 Network Service Discovery ────────────────────────────────────────
+  - keyword: "nmap"
+    techniques: T1046
+    confidence: 0.85
+
+  - keyword: "masscan"
+    techniques: T1046
+    confidence: 0.85
+
+  - keyword: "portscan"
+    techniques: T1046
+    confidence: 0.80
+
+  # ─── T1530 Data from Cloud Storage ─────────────────────────────────────────
+  - keyword: "s3:GetObject"
+    techniques: T1530
+    confidence: 0.85
+
+  - keyword: "GetBucketObject"
+    techniques: T1530
+    confidence: 0.80
+
+  # ─── T1071 Application Layer Protocol ──────────────────────────────────────
+  - keyword: "dns beaconing"
+    techniques: T1071.004
+    confidence: 0.85
+
+  - keyword: "dga"
+    techniques: T1568.002
+    confidence: 0.80
+    note: Domain Generation Algorithm
+
+  - keyword: "c2"
+    techniques: T1071
+    confidence: 0.50
+
+  # ─── T1486 Data Encrypted for Impact ────────────────────────────────────────
+  - keyword: "ransomware"
+    techniques: T1486
+    confidence: 0.85
+
+  - keyword: ".locked"
+    techniques: T1486
+    confidence: 0.65

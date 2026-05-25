@@ -1,0 +1,125 @@
+name: Detection Validation (Reusable)
+
+# Reusable workflow — consumers copy this to their detection-as-code repo:
+#
+#   jobs:
+#     validate:
+#       uses: detection-validator/detection-validator/.github/workflows/detection-validation.yml@main
+#       with:
+#         rules-path: detections/
+#         siem: opensearch
+#         output-format: sarif
+#       secrets:
+#         siem-credentials: ${{ secrets.SIEM_CREDENTIALS }}
+
+on:
+  workflow_call:
+    inputs:
+      rules-path:
+        description: "Path to detection rules directory"
+        required: false
+        default: "."
+        type: string
+      siem:
+        description: "Target SIEM: splunk | opensearch | elastic | sentinel | chronicle | wazuh"
+        required: false
+        default: "opensearch"
+        type: string
+      output-format:
+        description: "Report format: sarif | json | html | slack"
+        required: false
+        default: "sarif"
+        type: string
+      profile:
+        description: "Resource profile: tiny | standard | full"
+        required: false
+        default: "tiny"
+        type: string
+      fail-on-gap:
+        description: "Fail the workflow if coverage gaps are found"
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      siem-credentials:
+        required: false
+        description: "JSON blob with SIEM connection credentials"
+    outputs:
+      coverage-score:
+        description: "ATT&CK coverage score (0-100)"
+        value: ${{ jobs.validate.outputs.coverage-score }}
+      sarif-artifact:
+        description: "Name of the uploaded SARIF artifact"
+        value: ${{ jobs.validate.outputs.sarif-artifact }}
+
+jobs:
+  validate:
+    name: Validate detections (${{ inputs.siem }})
+    runs-on: ubuntu-latest
+    outputs:
+      coverage-score: ${{ steps.validate.outputs.coverage-score }}
+      sarif-artifact: ${{ steps.upload.outputs.artifact-name }}
+
+    steps:
+      - name: Checkout calling repo
+        uses: actions/checkout@v4
+
+      - name: Checkout detection-validator action
+        uses: actions/checkout@v4
+        with:
+          repository: detection-validator/detection-validator
+          path: .dv-action
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Pull detection-validator core image
+        run: |
+          docker pull ghcr.io/detection-validator/core:latest || \
+          docker buildx bake --file .dv-action/docker-bake.hcl \
+            --set "core.output=type=docker" core
+
+      - name: Start validation stack
+        run: |
+          chmod +x .dv-action/dv
+          .dv-action/dv up core --profile ${{ inputs.profile }} --siem ${{ inputs.siem }} &
+          sleep 20
+
+      - name: Run validation
+        id: validate
+        run: |
+          docker run --rm \
+            --network detection-validator_dv-net \
+            -v "$(pwd)/${{ inputs.rules-path }}:/rules:ro" \
+            -e SIEM_TYPE=${{ inputs.siem }} \
+            ghcr.io/detection-validator/core:latest \
+            validate /rules \
+            --siem ${{ inputs.siem }} \
+            --format ${{ inputs.output-format }} \
+            --output /tmp/results.${{ inputs.output-format }}
+          echo "coverage-score=0" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: inputs.output-format == 'sarif'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: /tmp/results.sarif
+          category: detection-validator
+
+      - name: Upload report artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: dv-report-${{ inputs.siem }}-${{ github.run_id }}
+          path: /tmp/results.*
+          retention-days: 30
+
+      - name: Teardown
+        if: always()
+        run: .dv-action/dv down core --siem ${{ inputs.siem }} || true
+
+      - name: Fail on gap
+        if: inputs.fail-on-gap && steps.validate.outputs.coverage-score < 50
+        run: |
+          echo "Coverage score below threshold"
+          exit 1

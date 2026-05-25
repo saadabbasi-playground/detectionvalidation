@@ -1,0 +1,37 @@
+---
+# Vector log shipper — aggregates from all victim containers and routes to active SIEMs.
+name: detection-validator
+
+services:
+  vector:
+    image: timberio/vector:0.39.0-debian
+    container_name: dv-vector
+    restart: unless-stopped
+    volumes:
+      - ../configs/vector/vector.toml:/etc/vector/vector.toml:ro
+      - victim-logs:/var/log/victim:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      VECTOR_LOG: ${VECTOR_LOG_LEVEL:-info}
+      OPENSEARCH_HOST: ${OPENSEARCH_HOST:-opensearch}
+      OPENSEARCH_PORT: ${OPENSEARCH_PORT:-9200}
+      SPLUNK_HEC_URL: ${SPLUNK_HEC_URL:-http://splunk:8088}
+      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-dv-hec-token}
+    ports:
+      - "${VECTOR_API_PORT:-8686}:8686"
+    networks:
+      - dv-net
+    healthcheck:
+      test: ["CMD", "vector", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+volumes:
+  victim-logs:
+    external: true

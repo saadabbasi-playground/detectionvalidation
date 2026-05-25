@@ -1,0 +1,46 @@
+---
+# Wazuh SIEM extension — ./dv up --siem wazuh
+name: detection-validator
+
+services:
+  wazuh-manager:
+    image: wazuh/wazuh-manager:4.7.4
+    container_name: dv-wazuh-manager
+    restart: unless-stopped
+    environment:
+      INDEXER_URL: https://wazuh-indexer:9200
+      INDEXER_USERNAME: admin
+      INDEXER_PASSWORD: ${WAZUH_INDEXER_PASSWORD:-SecretPassword}
+      FILEBEAT_SSL_VERIFICATION_MODE: full
+    volumes:
+      - wazuh-api:/var/ossec/api/configuration
+      - wazuh-etc:/var/ossec/etc
+      - wazuh-logs:/var/ossec/logs
+    ports:
+      - "${WAZUH_MANAGER_PORT:-1514}:1514"
+      - "${WAZUH_API_PORT:-55000}:55000"
+    healthcheck:
+      test: ["CMD-SHELL", "/var/ossec/bin/wazuh-control status | grep 'is running'"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    networks:
+      - dv-net
+
+  wazuh-indexer:
+    image: wazuh/wazuh-indexer:4.7.4
+    container_name: dv-wazuh-indexer
+    restart: unless-stopped
+    environment:
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+    volumes:
+      - wazuh-indexer-data:/var/lib/wazuh-indexer
+    networks:
+      - dv-net
+
+volumes:
+  wazuh-api:
+  wazuh-etc:
+  wazuh-logs:
+  wazuh-indexer-data:

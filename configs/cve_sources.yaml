@@ -1,0 +1,41 @@
+# CVE intelligence source declarations
+#
+# Each top-level key is a source name.  The `fetcher` field maps to the class
+# in src/detection_validator/mappers/cve_sources/<fetcher>.py.
+# Adding a new feed: see docs/adding-a-cve-source.md.
+
+sources:
+
+  nvd:
+    enabled: true
+    fetcher: nvd
+    ttl_days: 1
+    base_url: https://services.nvd.nist.gov/rest/json/cves/2.0
+    # api_key: ""   # Set NVDAPIKEY env var for higher rate limits (50 req/30s vs 5)
+    rate_limit_sleep: 0.6   # seconds between requests without an API key
+    timeout: 30
+
+  kev:
+    enabled: true
+    fetcher: kev
+    ttl_days: 1
+    url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+    timeout: 30
+
+  ctid:
+    enabled: true
+    fetcher: ctid
+    ttl_days: 7
+    # ATT&CK-to-CVE mapping from Center for Threat-Informed Defense
+    url: https://raw.githubusercontent.com/center-for-threat-informed-defense/attack_to_cve/main/data/attack_to_cve.csv
+    # Fallback JSON endpoint (same project)
+    fallback_url: https://raw.githubusercontent.com/center-for-threat-informed-defense/attack_to_cve/main/data/attack_to_cve.json
+    timeout: 30
+
+  epss:
+    enabled: true
+    fetcher: epss
+    ttl_days: 1
+    base_url: https://api.first.org/data/v1/epss
+    batch_size: 100   # CVEs per EPSS API request
+    timeout: 30

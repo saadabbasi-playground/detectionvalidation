@@ -1,0 +1,24 @@
+// Detects suspicious PowerShell execution patterns via Microsoft Defender
+// Technique: T1059.001 - Command and Scripting Interpreter: PowerShell
+DeviceProcessEvents
+| where TimeGenerated > ago(24h)
+| where FileName =~ "powershell.exe" or FileName =~ "pwsh.exe"
+| where ProcessCommandLine has_any (
+    "-EncodedCommand",
+    "-Enc ",
+    "IEX(",
+    "Invoke-Expression",
+    "DownloadString",
+    "WebClient",
+    "Net.WebClient"
+  )
+| where InitiatingProcessFileName !in~ ("svchost.exe", "services.exe", "WmiPrvSE.exe")
+| project
+    Timestamp,
+    DeviceName,
+    AccountName,
+    FileName,
+    ProcessCommandLine,
+    InitiatingProcessFileName,
+    InitiatingProcessCommandLine
+| order by Timestamp desc

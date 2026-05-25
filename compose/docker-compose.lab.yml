@@ -1,0 +1,105 @@
+---
+# Lab extension — adds attacker, Linux victim, and atomic-runner.
+# Use: ./dv up lab [--siem <name>] [--windows container|emulator|none]
+name: detection-validator
+
+services:
+  attacker:
+    build:
+      context: ../docker/attacker
+      dockerfile: Dockerfile
+    image: ${REGISTRY:-detection-validator}/attacker:${TAG:-dev}
+    container_name: dv-attacker
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      TARGET_VICTIM: linux-victim
+      TARGET_WINDOWS: ${WINDOWS_MODE:-emulator}
+      CALDERA_URL: ${CALDERA_URL:-}
+    volumes:
+      - ../scenarios:/scenarios:ro
+      - lab-results:/results
+    networks:
+      - dv-net
+    depends_on:
+      - linux-victim
+    healthcheck:
+      test: ["CMD", "nuclei", "-version"]
+      interval: 60s
+      timeout: 15s
+      retries: 2
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${DV_ATTACKER_MEMORY:-512m}
+
+  linux-victim:
+    build:
+      context: ../docker/linux-victim
+      dockerfile: Dockerfile
+    image: ${REGISTRY:-detection-validator}/linux-victim:${TAG:-dev}
+    container_name: dv-linux-victim
+    restart: unless-stopped
+    cap_add:
+      - AUDIT_WRITE
+      - AUDIT_CONTROL
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      FALCO_OUTPUT: stdout
+      AUDITD_LOG_DIR: /var/log/audit
+    volumes:
+      - victim-logs:/var/log/audit
+      - ../configs:/etc/dv-configs:ro
+    networks:
+      - dv-net
+    healthcheck:
+      test: ["CMD", "pgrep", "auditd"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${DV_VICTIM_MEMORY:-512m}
+
+  atomic-runner:
+    build:
+      context: ../docker/atomic-runner
+      dockerfile: Dockerfile
+    image: ${REGISTRY:-detection-validator}/atomic-runner:${TAG:-dev}
+    container_name: dv-atomic-runner
+    restart: unless-stopped
+    environment:
+      ART_PATH: /opt/atomic-red-team
+      RUNNER_TARGET_HOST: linux-victim
+      RUNNER_DELAY: ${RUNNER_DELAY:-60}
+      RUNNER_TECHNIQUES: ${RUNNER_TECHNIQUES:-}
+    volumes:
+      - ../scenarios:/scenarios:ro
+      - lab-results:/results
+    networks:
+      - dv-net
+    depends_on:
+      linux-victim:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import atomic_operator; print('ok')"]
+      interval: 60s
+      timeout: 10s
+      retries: 2
+    deploy:
+      resources:
+        limits:
+          memory: ${DV_RUNNER_MEMORY:-256m}
+
+volumes:
+  lab-results:
+    driver: local
+  victim-logs:
+    driver: local

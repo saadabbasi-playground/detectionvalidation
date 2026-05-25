@@ -1,0 +1,29 @@
+---
+# OpenSearch SIEM extension — included by ./dv up --siem opensearch
+name: detection-validator
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.14.0
+    container_name: dv-opensearch
+    restart: unless-stopped
+    environment:
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+      discovery.type: ${OPENSEARCH_DISCOVERY:-single-node}
+      plugins.security.disabled: "true"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "${OPENSEARCH_PORT:-9200}:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    networks:
+      - dv-net
+
+volumes:
+  opensearch-data:
+    driver: local

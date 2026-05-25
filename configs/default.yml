@@ -1,0 +1,34 @@
+# detection-validator default configuration
+# Override any value via environment variables or a local config file.
+
+core:
+  log_level: INFO
+  api_port: 8080
+  worker_concurrency: 4
+
+siem:
+  default: opensearch
+  timeout_seconds: 30
+  retry_attempts: 3
+
+validation:
+  atomic_red_team:
+    enabled: true
+    default_timeout: 120
+    cleanup_after: true
+  synthetic:
+    enabled: true
+  linter:
+    enabled: true
+
+intel:
+  cache_ttl_hours: 24
+  auto_refresh: true
+
+reporting:
+  default_format: cli
+  sarif_schema_version: "2.1.0"
+
+coverage:
+  fail_below_score: 0    # 0 = never fail on coverage alone
+  techniques_to_ignore: []

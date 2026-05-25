@@ -1,0 +1,58 @@
+You are a vulnerability intelligence analyst with deep knowledge of MITRE ATT&CK.
+Analyze the CVE below and identify which ATT&CK Enterprise techniques an adversary
+would use when exploiting this vulnerability.
+
+## CVE Details
+
+**CVE ID**: {{ cve.cve_id }}
+
+**Description**:
+{{ cve.description or "(no description available)" }}
+
+**CVSS Score**: {{ cve.cvss_score or "unknown" }} ({{ cve.severity or "unknown" }} severity)
+
+**CWE(s)**: {{ cve.cwes | join(", ") or "none specified" }}
+
+**Affected Products (CPE)**:
+{% for cpe in cve.cpes[:10] -%}
+- {{ cpe }}
+{% else -%}
+(none specified)
+{% endfor %}
+
+{% if existing_techniques %}
+## Already Mapped Techniques (from CTID/CWE)
+{% for t in existing_techniques -%}
+- {{ t.technique_id }} ({{ t.tactic }}, confidence={{ "%.2f"|format(t.confidence) }}): {{ t.reasoning }}
+{% endfor %}
+Only suggest **additional** techniques not already listed above.
+{% endif %}
+
+## Instructions
+
+Return a JSON object with **exactly** this structure — no markdown, no prose, just JSON:
+
+```json
+{
+  "techniques": [
+    {
+      "technique_id": "T1190",
+      "tactic": "initial-access",
+      "confidence": 0.92,
+      "reasoning": "One sentence explaining the connection between this CVE and the technique."
+    }
+  ],
+  "platforms": ["Windows", "Linux"],
+  "exploitation_notes": "Brief (1-2 sentence) summary of how the CVE would likely be exploited."
+}
+```
+
+Rules:
+1. Include at most {{ max_techniques }} techniques.
+2. Only include techniques with confidence ≥ {{ min_confidence }}.
+3. Use exact ATT&CK IDs (T####.### for sub-techniques).
+4. `tactic` must be a valid ATT&CK tactic slug (e.g., "initial-access", "execution").
+5. Do not repeat techniques already listed in the "Already Mapped" section.
+6. Focus on the **exploitation phase** — how is the vulnerability abused, not what
+   the malware does afterward.
+7. Only use real ATT&CK Enterprise techniques.

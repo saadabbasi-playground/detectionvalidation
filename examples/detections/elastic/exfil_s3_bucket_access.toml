@@ -1,0 +1,45 @@
+[metadata]
+creation_date = "2024/01/10"
+integration = ["aws"]
+min_stack_version = "8.8.0"
+
+[rule]
+author = ["Elastic Cloud Security"]
+description = """
+Detects unusual S3 bucket access patterns that may indicate data exfiltration.
+High volume downloads from S3 buckets to unusual IP addresses.
+"""
+false_positives = ["Authorized backup processes", "Data migration jobs"]
+from = "now-60m"
+index = ["filebeat-*-aws.cloudtrail-*", "logs-aws.cloudtrail-*"]
+language = "esql"
+name = "Unusual S3 Object Download Volume"
+risk_score = 67
+rule_id = "c3d4e5f6-a7b8-9012-cdef-234567890123"
+severity = "medium"
+type = "esql"
+version = 2
+
+query = '''
+FROM logs-aws.cloudtrail-*
+| WHERE event.dataset == "aws.cloudtrail"
+  AND event.provider == "s3.amazonaws.com"
+  AND event.action == "GetObject"
+| STATS count = COUNT(*), total_bytes = SUM(aws.cloudtrail.request_parameters.bytes)
+  BY source.ip, aws.cloudtrail.resources.arn
+| WHERE count > 1000 OR total_bytes > 1073741824
+| SORT count DESC
+'''
+
+[[rule.threat]]
+framework = "MITRE ATT&CK"
+
+[[rule.threat.technique]]
+id = "T1530"
+name = "Data from Cloud Storage"
+reference = "https://attack.mitre.org/techniques/T1530/"
+
+[rule.threat.tactic]
+id = "TA0010"
+name = "Exfiltration"
+reference = "https://attack.mitre.org/tactics/TA0010/"

@@ -1,0 +1,52 @@
+[metadata]
+creation_date = "2023/06/15"
+integration = ["endpoint"]
+min_stack_version = "8.4.0"
+
+[rule]
+author = ["Elastic"]
+description = """
+Identifies when a process injects code into another process's address space
+through suspicious WriteProcessMemory/CreateRemoteThread API calls.
+Commonly used by malware for defense evasion and privilege escalation.
+"""
+false_positives = [
+    "Security tools may inject into processes for monitoring purposes",
+    "Some legitimate software uses code injection for inter-process communication"
+]
+from = "now-9m"
+index = ["logs-endpoint.events.process-*", "winlogbeat-*"]
+language = "eql"
+name = "Suspicious Process Injection via WriteProcessMemory"
+risk_score = 73
+rule_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+severity = "high"
+type = "eql"
+version = 5
+
+query = '''
+sequence by host.name with maxspan=5s
+  [process where event.type == "start" and
+   process.name : ("powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe")]
+  [process where event.type == "start" and
+   process.parent.name : ("powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe") and
+   not process.name : ("conhost.exe")]
+'''
+
+[[rule.threat]]
+framework = "MITRE ATT&CK"
+
+[[rule.threat.technique]]
+id = "T1055"
+name = "Process Injection"
+reference = "https://attack.mitre.org/techniques/T1055/"
+
+[[rule.threat.technique.subtechnique]]
+id = "T1055.002"
+name = "Portable Executable Injection"
+reference = "https://attack.mitre.org/techniques/T1055/002/"
+
+[rule.threat.tactic]
+id = "TA0005"
+name = "Defense Evasion"
+reference = "https://attack.mitre.org/tactics/TA0005/"

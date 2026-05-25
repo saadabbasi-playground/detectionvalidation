@@ -1,0 +1,51 @@
+# Vector configuration — routes victim telemetry to active SIEM(s).
+# This file is mounted into the vector container at /etc/vector/vector.toml.
+
+[api]
+enabled = true
+address = "0.0.0.0:8686"
+
+# ── Sources ──────────────────────────────────────────────────────────────────
+
+[sources.victim_audit_logs]
+type = "file"
+include = ["/var/log/victim/**/*.log"]
+read_from = "beginning"
+
+[sources.docker_logs]
+type = "docker_logs"
+docker_host = "unix:///var/run/docker.sock"
+include_containers = ["dv-linux-victim", "dv-win-emulator"]
+
+# ── Transforms ───────────────────────────────────────────────────────────────
+
+[transforms.parse_sysmon]
+type = "remap"
+inputs = ["victim_audit_logs", "docker_logs"]
+source = '''
+  .source = "detection-validator"
+  .host = get_env_var!("HOSTNAME")
+  if is_string(.message) {
+    parsed, err = parse_json(.message)
+    if err == null { . = merge(., parsed) }
+  }
+'''
+
+# ── Sinks ────────────────────────────────────────────────────────────────────
+
+[sinks.opensearch_out]
+type = "elasticsearch"
+inputs = ["parse_sysmon"]
+endpoints = ["http://${OPENSEARCH_HOST:-opensearch}:${OPENSEARCH_PORT:-9200}"]
+index = "dv-telemetry-%Y.%m.%d"
+mode = "bulk"
+
+  [sinks.opensearch_out.request]
+  timeout_secs = 30
+
+[sinks.splunk_hec]
+type = "splunk_hec_logs"
+inputs = ["parse_sysmon"]
+endpoint = "${SPLUNK_HEC_URL:-http://splunk:8088}"
+token = "${SPLUNK_HEC_TOKEN:-dv-hec-token}"
+index = "detection_validator"

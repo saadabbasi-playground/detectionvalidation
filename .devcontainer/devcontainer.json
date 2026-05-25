@@ -1,0 +1,60 @@
+{
+  "name": "detection-validator",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true,
+      "dockerDashComposeVersion": "v2"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    },
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.22"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "postStartCommand": "chmod +x ./dv",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "ms-azuretools.vscode-docker",
+        "golang.go",
+        "redhat.vscode-yaml",
+        "ms-vscode.makefile-tools",
+        "GitHub.copilot"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "editor.formatOnSave": true,
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    },
+    "codespaces": {
+      "openFiles": ["README.md"]
+    }
+  },
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspaces/detection-validator,type=bind,consistency=cached"
+  ],
+  "remoteUser": "vscode",
+  "workspaceFolder": "/workspaces/detection-validator",
+  "forwardPorts": [8080, 5601, 9200, 3000, 8686],
+  "portsAttributes": {
+    "8080": { "label": "DV API", "onAutoForward": "notify" },
+    "5601": { "label": "OpenSearch Dashboards", "onAutoForward": "silent" },
+    "9200": { "label": "OpenSearch", "onAutoForward": "silent" },
+    "3000": { "label": "Grafana", "onAutoForward": "notify" },
+    "8686": { "label": "Vector API", "onAutoForward": "silent" }
+  }
+}

@@ -1,0 +1,40 @@
+---
+# Splunk Enterprise SIEM extension — included by ./dv up --siem splunk
+# Requires SPLUNK_PASSWORD env var. Not available on tiny profile.
+name: detection-validator
+
+services:
+  splunk:
+    image: splunk/splunk:9.2.1
+    container_name: dv-splunk
+    restart: unless-stopped
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_PASSWORD: ${SPLUNK_PASSWORD:-Ch@ngeMe123}
+      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-dv-hec-token}
+      SPLUNK_APPS_URL: ${SPLUNK_APPS_URL:-}
+    volumes:
+      - splunk-data:/opt/splunk/var
+      - splunk-etc:/opt/splunk/etc
+    ports:
+      - "${SPLUNK_WEB_PORT:-8000}:8000"
+      - "${SPLUNK_HEC_PORT:-8088}:8088"
+      - "${SPLUNK_API_PORT:-8089}:8089"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000 || exit 1"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+    networks:
+      - dv-net
+    deploy:
+      resources:
+        limits:
+          memory: ${SPLUNK_MEMORY:-4g}
+
+volumes:
+  splunk-data:
+    driver: local
+  splunk-etc:
+    driver: local

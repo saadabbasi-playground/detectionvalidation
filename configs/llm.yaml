@@ -1,0 +1,17 @@
+# LLM configuration for ATT&CK technique inference
+#
+# model     : Anthropic model ID to use (claude-haiku recommended for cost)
+# max_tokens: Maximum tokens in LLM response
+# temperature: Sampling temperature (lower = more deterministic)
+# timeout_s  : HTTP request timeout in seconds
+# max_candidates: Maximum number of technique candidates to return
+# min_confidence : Filter out candidates below this threshold
+# prompt_template: Path to Jinja2 template (relative to project root)
+
+model: claude-haiku-4-5-20251001
+max_tokens: 1024
+temperature: 0.1
+timeout_s: 30
+max_candidates: 5
+min_confidence: 0.30
+prompt_template: configs/llm_prompts/technique_inference.j2

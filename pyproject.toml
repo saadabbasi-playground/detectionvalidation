@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "detection-validator"
+version = "0.1.0"
+description = "Multi-SIEM detection validation platform"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+keywords = ["siem", "detection", "security", "mitre", "attack"]
+dependencies = [
+    "pydantic>=2.7",
+    "click>=8.1",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+    "jinja2>=3.1",
+    "networkx>=3.3",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "celery[redis]>=5.4",
+    "redis>=5.0",
+    "splunk-sdk>=2.0",
+    "opensearch-py>=2.6",
+    "elasticsearch>=8.13",
+    "azure-monitor-query>=1.3",
+    "azure-mgmt-securityinsight>=1.0",
+    "google-cloud-chronicle>=0.1",
+    "pySigma>=0.11",
+    "pysigma-backend-splunk>=0.9",
+    "pysigma-backend-opensearch>=0.3",
+    "pysigma-backend-elasticsearch>=1.1",
+    "pysigma-backend-kusto>=0.3",
+    "mitreattack-python>=3.0",
+]
+
+[project.optional-dependencies]
+llm = [
+    "anthropic>=0.25",
+]
+dev = [
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "httpx>=0.27",
+    "respx>=0.21",
+]
+
+[project.scripts]
+detection-validator = "detection_validator.cli:main"
+dv-agent = "detection_validator.orchestrator.worker:start"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/detection_validator"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/detection_validator/tests"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["detection_validator"]
+
+[tool.coverage.run]
+source = ["src/detection_validator"]
+omit = ["*/tests/*"]

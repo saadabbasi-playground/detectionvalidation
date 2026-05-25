@@ -1,0 +1,78 @@
+{
+  "name": "detection-validator",
+  "displayName": "Detection Validator",
+  "description": "Validate SIEM detection rules inline with ATT&CK coverage and gap analysis",
+  "version": "0.1.0",
+  "publisher": "detection-validator",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Linters", "Other"],
+  "keywords": ["siem", "detection", "sigma", "mitre", "attack", "security"],
+  "activationEvents": [
+    "onLanguage:yaml",
+    "onLanguage:json",
+    "onCommand:detection-validator.validate"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "detection-validator.validate",
+        "title": "DV: Validate current rule",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "detection-validator.showCoverage",
+        "title": "DV: Show ATT&CK coverage matrix"
+      },
+      {
+        "command": "detection-validator.openDashboard",
+        "title": "DV: Open validation dashboard"
+      }
+    ],
+    "configuration": {
+      "title": "Detection Validator",
+      "properties": {
+        "detection-validator.endpoint": {
+          "type": "string",
+          "default": "http://localhost:8080",
+          "description": "detection-validator core API endpoint"
+        },
+        "detection-validator.siem": {
+          "type": "string",
+          "default": "opensearch",
+          "enum": ["opensearch", "splunk", "elastic", "sentinel", "chronicle", "wazuh"],
+          "description": "Target SIEM backend"
+        },
+        "detection-validator.autoValidate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically validate rules on save"
+        }
+      }
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "detection-validator.validate",
+          "when": "resourceExtname == .yml || resourceExtname == .yaml",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "@vscode/vsce": "^2.27.0"
+  }
+}

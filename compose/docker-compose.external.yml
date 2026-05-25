@@ -1,0 +1,27 @@
+---
+# External endpoint extension — "bring your own endpoint" agent.
+# Allows pointing detection-validator at a real host or SIEM rather than lab containers.
+# Use: ./dv up core --external
+name: detection-validator
+
+services:
+  byo-endpoint-agent:
+    image: ${REGISTRY:-detection-validator}/core:${TAG:-dev}
+    container_name: dv-byo-agent
+    restart: unless-stopped
+    command: ["agent", "connect", "--endpoint", "${BYO_ENDPOINT_URL:-http://host.docker.internal:514}"]
+    environment:
+      AGENT_MODE: external
+      AGENT_ENDPOINT_URL: ${BYO_ENDPOINT_URL:-http://host.docker.internal:514}
+      AGENT_ENDPOINT_TYPE: ${BYO_ENDPOINT_TYPE:-syslog}
+      AGENT_API_KEY: ${BYO_ENDPOINT_API_KEY:-}
+      AGENT_SIEM_TYPE: ${BYO_SIEM_TYPE:-opensearch}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - dv-net
+    healthcheck:
+      test: ["CMD", "detection-validator", "agent", "status"]
+      interval: 60s
+      timeout: 15s
+      retries: 3

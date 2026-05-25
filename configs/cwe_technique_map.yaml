@@ -1,0 +1,192 @@
+# CWE → ATT&CK technique inference table
+#
+# When a CVE declares one of these CWEs and no direct CTID mapping exists,
+# these techniques are inferred with the given confidence.
+#
+# Format per entry:
+#   cwe_id    : CWE-NNN (string)
+#   techniques: list of ATT&CK technique IDs
+#   confidence: 0-1 base confidence score
+#   note      : optional human-readable rationale
+
+mappings:
+
+  # ─── Injection ──────────────────────────────────────────────────────────────
+  - cwe_id: CWE-77
+    techniques: [T1059]
+    confidence: 0.80
+    note: Command injection — adversary can run arbitrary OS commands
+
+  - cwe_id: CWE-78
+    techniques: [T1059, T1059.003]
+    confidence: 0.85
+    note: OS Command Injection — direct shell command execution
+
+  - cwe_id: CWE-89
+    techniques: [T1190]
+    confidence: 0.80
+    note: SQL Injection — initial access / exploit public-facing application
+
+  - cwe_id: CWE-94
+    techniques: [T1059]
+    confidence: 0.75
+    note: Code injection
+
+  - cwe_id: CWE-917
+    techniques: [T1059]
+    confidence: 0.85
+    note: Expression language injection (e.g. Log4Shell, Spring4Shell)
+
+  # ─── File operations ─────────────────────────────────────────────────────────
+  - cwe_id: CWE-434
+    techniques: [T1105, T1505.003]
+    confidence: 0.80
+    note: Unrestricted file upload — tool transfer + potential webshell
+
+  - cwe_id: CWE-22
+    techniques: [T1083]
+    confidence: 0.80
+    note: Path traversal — file and directory discovery
+
+  - cwe_id: CWE-73
+    techniques: [T1083]
+    confidence: 0.70
+    note: External control of file name / path
+
+  # ─── Web / network ───────────────────────────────────────────────────────────
+  - cwe_id: CWE-79
+    techniques: [T1189]
+    confidence: 0.75
+    note: XSS — drive-by compromise via crafted page
+
+  - cwe_id: CWE-918
+    techniques: [T1090]
+    confidence: 0.75
+    note: SSRF — proxy / connection through victim host
+
+  - cwe_id: CWE-611
+    techniques: [T1213]
+    confidence: 0.70
+    note: XXE — data from information repositories / SSRF-style
+
+  - cwe_id: CWE-352
+    techniques: [T1185]
+    confidence: 0.65
+    note: CSRF — browser session hijacking
+
+  # ─── Authentication / credential ─────────────────────────────────────────────
+  - cwe_id: CWE-287
+    techniques: [T1078]
+    confidence: 0.80
+    note: Improper authentication — valid account access
+
+  - cwe_id: CWE-306
+    techniques: [T1078.001]
+    confidence: 0.85
+    note: Missing authentication for critical function — default accounts
+
+  - cwe_id: CWE-798
+    techniques: [T1552.001]
+    confidence: 0.90
+    note: Hard-coded credentials — credentials in files
+
+  - cwe_id: CWE-255
+    techniques: [T1552]
+    confidence: 0.70
+    note: Credentials management weaknesses
+
+  - cwe_id: CWE-284
+    techniques: [T1078]
+    confidence: 0.65
+    note: Improper access control — valid account abuse
+
+  # ─── Memory corruption ───────────────────────────────────────────────────────
+  - cwe_id: CWE-119
+    techniques: [T1203]
+    confidence: 0.75
+    note: Buffer overflow — client exploitation
+
+  - cwe_id: CWE-120
+    techniques: [T1203]
+    confidence: 0.75
+    note: Classic buffer copy without bounds check
+
+  - cwe_id: CWE-121
+    techniques: [T1203]
+    confidence: 0.75
+    note: Stack-based buffer overflow
+
+  - cwe_id: CWE-122
+    techniques: [T1203]
+    confidence: 0.75
+    note: Heap-based buffer overflow
+
+  - cwe_id: CWE-416
+    techniques: [T1203, T1055]
+    confidence: 0.70
+    note: Use after free — exploitation for privilege escalation / code exec
+
+  - cwe_id: CWE-190
+    techniques: [T1203]
+    confidence: 0.65
+    note: Integer overflow
+
+  # ─── Deserialization ─────────────────────────────────────────────────────────
+  - cwe_id: CWE-502
+    techniques: [T1059, T1190]
+    confidence: 0.80
+    note: Deserialization of untrusted data — RCE commonly leads to T1059
+
+  # ─── Privilege escalation ────────────────────────────────────────────────────
+  - cwe_id: CWE-269
+    techniques: [T1068]
+    confidence: 0.80
+    note: Improper privilege management — exploitation for privilege escalation
+
+  - cwe_id: CWE-732
+    techniques: [T1222]
+    confidence: 0.65
+    note: Incorrect permission assignment for critical resource
+
+  # ─── Cryptography / information exposure ─────────────────────────────────────
+  - cwe_id: CWE-327
+    techniques: [T1040]
+    confidence: 0.60
+    note: Use of broken crypto — can lead to network sniffing exploitation
+
+  - cwe_id: CWE-200
+    techniques: [T1213]
+    confidence: 0.65
+    note: Exposure of sensitive information — data from repositories
+
+  - cwe_id: CWE-312
+    techniques: [T1552]
+    confidence: 0.65
+    note: Cleartext storage of sensitive information
+
+  # ─── Remote code execution / server-side ─────────────────────────────────────
+  - cwe_id: CWE-20
+    techniques: [T1190]
+    confidence: 0.60
+    note: Improper input validation — generic initial access vector
+
+  - cwe_id: CWE-276
+    techniques: [T1222]
+    confidence: 0.65
+    note: Incorrect default permissions
+
+  # ─── Log4Shell / similar expression evaluation ───────────────────────────────
+  - cwe_id: CWE-400
+    techniques: [T1499]
+    confidence: 0.60
+    note: Uncontrolled resource consumption — impact/DoS
+
+  - cwe_id: CWE-862
+    techniques: [T1078]
+    confidence: 0.70
+    note: Missing authorization
+
+  - cwe_id: CWE-863
+    techniques: [T1078]
+    confidence: 0.70
+    note: Incorrect authorization

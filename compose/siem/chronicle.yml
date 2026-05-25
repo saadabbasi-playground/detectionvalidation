@@ -1,0 +1,27 @@
+---
+# Google Chronicle stub — ./dv up --siem chronicle
+name: detection-validator
+
+services:
+  chronicle-forwarder:
+    image: ${REGISTRY:-detection-validator}/core:${TAG:-dev}
+    container_name: dv-chronicle-forwarder
+    restart: unless-stopped
+    command: ["siem", "connect", "--type", "chronicle"]
+    environment:
+      CHRONICLE_REGION: ${CHRONICLE_REGION:-us}
+      CHRONICLE_CUSTOMER_ID: ${CHRONICLE_CUSTOMER_ID:?CHRONICLE_CUSTOMER_ID required}
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/chronicle-sa-key
+    secrets:
+      - chronicle-sa-key
+    networks:
+      - dv-net
+    healthcheck:
+      test: ["CMD", "detection-validator", "siem", "status", "--type", "chronicle"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+
+secrets:
+  chronicle-sa-key:
+    file: ${CHRONICLE_SA_KEY_PATH:-/dev/null}

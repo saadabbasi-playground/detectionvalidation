@@ -1,0 +1,64 @@
+---
+# Core stack — detection-validator service only.
+# Use: ./dv up [core]
+name: detection-validator
+
+services:
+  core:
+    build:
+      context: ..
+      dockerfile: docker/core/Dockerfile
+      args:
+        BUILDPLATFORM: ${BUILDPLATFORM:-linux/amd64}
+        TARGETPLATFORM: ${TARGETPLATFORM:-linux/amd64}
+    image: ${REGISTRY:-detection-validator}/core:${TAG:-dev}
+    container_name: dv-core
+    restart: unless-stopped
+    env_file:
+      - ${DV_PROFILE_FILE:-profiles/standard.env}
+    environment:
+      DV_ENV: ${DV_ENV:-development}
+      DV_LOG_LEVEL: ${DV_LOG_LEVEL:-INFO}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "${DV_PORT:-8080}:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import detection_validator; detection_validator.health_check()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - dv-net
+    deploy:
+      resources:
+        limits:
+          memory: ${DV_CORE_MEMORY:-512m}
+
+  redis:
+    image: redis:7-alpine
+    container_name: dv-redis
+    restart: unless-stopped
+    command: redis-server --save "" --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dv-net
+    deploy:
+      resources:
+        limits:
+          memory: 192m
+
+networks:
+  dv-net:
+    driver: bridge
+
+volumes:
+  dv-data:
+    driver: local

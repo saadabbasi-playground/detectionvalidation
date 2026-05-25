@@ -1,0 +1,41 @@
+name: Suspicious WMI Execution for Lateral Movement
+id: e4f5a6b7-c8d9-0123-ef45-678901234567
+version: 4
+date: '2023-09-15'
+author: Splunk Threat Research Team
+description: |
+  Detects suspicious WMI (Windows Management Instrumentation) execution that
+  may indicate lateral movement or remote command execution. WMI is commonly
+  abused by adversaries for T1021.006 (Remote Services: Windows Remote Management).
+search: >-
+  `sysmon` EventCode=1
+  (ParentImage="*\\WmiPrvSE.exe" OR CommandLine="*wmic*" OR CommandLine="*Win32_Process*")
+  NOT [search index=asset_intel_whitelist wmi_whitelist=true | fields host]
+  | eval mitre_technique="T1047,T1021.006"
+  | stats count min(_time) as firstTime max(_time) as lastTime by host, user, CommandLine, ParentImage, mitre_technique
+  | `security_content_ctime(firstTime)`
+  | `security_content_ctime(lastTime)`
+how_to_implement: |
+  Install Sysmon with a configuration that captures process creation events.
+  Requires the `sysmon` macro and `security_content_summariesonly` macro.
+known_false_positives: >-
+  Legitimate WMI usage by system administrators and monitoring tools.
+  Tune using the asset whitelist search.
+tags:
+  analytic_story:
+    - Lateral Movement
+    - Windows Admin Shares
+  mitre_attack_id:
+    - T1047
+    - T1021.006
+  kill_chain_phases:
+    - Lateral Movement
+  required_fields:
+    - EventCode
+    - ParentImage
+    - CommandLine
+    - host
+    - user
+  security_domain: endpoint
+  severity: high
+  asset_type: Endpoint

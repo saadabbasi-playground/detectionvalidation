@@ -1,0 +1,38 @@
+---
+# Windows victim extension — opt-in, amd64 only with Windows container daemon.
+# On ARM64: use win-emulator via docker-compose.lab.yml (enabled automatically by ./dv).
+# Use: ./dv up lab --windows container
+name: detection-validator
+
+services:
+  win-victim:
+    build:
+      context: ../docker/win-victim
+      dockerfile: Dockerfile
+    image: ${REGISTRY:-detection-validator}/win-victim:${TAG:-dev}
+    container_name: dv-win-victim
+    restart: unless-stopped
+    isolation: process
+    volumes:
+      - win-logs:C:/Windows/System32/winevt/Logs
+    networks:
+      - dv-net
+    healthcheck:
+      test:
+        - CMD
+        - powershell
+        - -Command
+        - "if ((Get-Service -Name Sysmon64 -EA SilentlyContinue).Status -eq 'Running') { exit 0 } else { exit 1 }"
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: ${DV_WIN_VICTIM_MEMORY:-2g}
+    platform: windows/amd64
+
+volumes:
+  win-logs:
+    driver: local
