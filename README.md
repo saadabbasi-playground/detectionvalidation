@@ -4,7 +4,8 @@ Multi-SIEM detection validation platform. Simulate CVE-based attacks, capture re
 
 ```
 dv attack --cve CVE-2021-44228 --target vagrant --watch
-dv validate examples/detections/sigma/ --since 1
+dv validate examples/detections/sigma/ --since 1 --format json | dv report
+dv validate examples/detections/sigma/ --since 1 --format json | dv report --format html -o report.html
 dv cve-coverage --cve CVE-2021-44228 --detections mapped.jsonl
 ```
 
@@ -27,6 +28,7 @@ Vagrant VM (Ubuntu 22.04)          Mac host
 1. **`dv attack`** sends simulated exploit steps to the Vagrant VM. The victim agent executes them and writes audit events to `/var/log/audit/audit-events.jsonl`.
 2. **Vector** ships those events to OpenSearch and Splunk on the Mac host.
 3. **`dv validate`** loads your Sigma/Splunk/KQL detection rules, queries each SIEM for matching events, and reports PASS/FAIL per rule.
+4. **`dv report`** takes those results and renders them as a CLI summary, SARIF file, or self-contained HTML page.
 
 ---
 
@@ -207,7 +209,91 @@ dv validate examples/detections/sigma/ -o validated.jsonl
 
 ---
 
-## Step 5 — View telemetry
+## Step 5 — Generate a report
+
+`dv report` reads the JSON output from `dv validate` and renders it in the format you need.
+
+### Pipe directly from validate
+
+```bash
+# CLI summary (default)
+dv validate examples/detections/sigma/ --since 1 --format json | dv report
+
+# Self-contained HTML page
+dv validate examples/detections/sigma/ --since 1 --format json | dv report --format html -o report.html
+
+# SARIF 2.1.0 for GitHub Code Scanning
+dv validate examples/detections/sigma/ --since 1 --format json | dv report --format sarif -o scan.sarif
+```
+
+### Save results first, then report
+
+```bash
+dv validate examples/detections/sigma/ --since 1 --format json -o results.json
+dv report --results results.json --format html -o report.html
+```
+
+### CLI report output
+
+```
+╭─────── Validation Summary ────────╮
+│ Rules:       7                    │
+│ Pass:        4 (57%)              │
+│ Fail:        3                    │
+│ Error:       0                    │
+│ Skip:        0                    │
+│                                   │
+│ Techniques:  8 covered / 12 total │
+│ Generated:   2026-05-25 09:45 UTC │
+╰───────────────────────────────────╯
+
+Failing rules
+  Rule                    Techniques         SIEM        Status
+  LSASS Memory Dump       T1003.001          opensearch  ✗ FAIL
+  MSHTA Spawning Shell    T1218.005,T1059    opensearch  ✗ FAIL
+  Nmap Port Scan          T1046              opensearch  ✗ FAIL
+
+ATT&CK Tactic Coverage
+  Tactic                   Coverage       Techniques covered
+  Credential Access        0/1 (0%)       —
+  Defense Evasion          1/2 (50%)      T1078
+  Execution                1/2 (50%)      T1059.004
+  Impact                   1/1 (100%)     T1499
+  Initial Access           1/1 (100%)     T1190
+  Persistence              2/2 (100%)     T1505.003, T1547.012
+  Privilege Escalation     2/2 (100%)     T1068, T1574.001
+
+Passing rules (4): Log4Shell JNDI Injection, PrintNightmare, ProxyLogon, Test
+```
+
+### Report formats
+
+| Format | Use case |
+|---|---|
+| `cli` | Interactive terminal summary with tactic coverage breakdown |
+| `json` | Pretty-printed results for scripting or downstream tools |
+| `sarif` | GitHub Code Scanning — failing rules appear as PR annotations |
+| `html` | Self-contained dark-theme page with summary cards and coverage bars |
+
+### SARIF in GitHub Actions
+
+Upload the SARIF file to GitHub Code Scanning so failing rules appear as annotations on pull requests:
+
+```yaml
+- name: Validate detections
+  run: |
+    dv validate detections/ --since 24 --format json | \
+    dv report --format sarif -o scan.sarif
+
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: scan.sarif
+```
+
+---
+
+## Step 6 — View telemetry
 
 ### OpenSearch Dashboards
 
@@ -332,12 +418,13 @@ Ready-to-use rules under `examples/detections/`:
 
 ```
 ┌─ CLI ──────────────────────────────────────────────────────────┐
-│  dv attack    — simulate CVE exploit steps on victim           │
-│  dv validate  — query SIEM for rule hits, report PASS/FAIL     │
-│  dv ingest    — parse Sigma/Splunk/KQL/YARA/EQL rules to JSONL │
-│  dv map       — map rules to ATT&CK techniques                 │
+│  dv attack       — simulate CVE exploit steps on victim        │
+│  dv validate     — query SIEM for rule hits, report PASS/FAIL  │
+│  dv report       — render results as CLI / SARIF / HTML        │
+│  dv ingest       — parse Sigma/Splunk/KQL/YARA/EQL to JSONL    │
+│  dv map          — map rules to ATT&CK techniques              │
 │  dv cve-coverage — analyze coverage gaps per CVE               │
-│  dv navigator — export ATT&CK Navigator layer                  │
+│  dv navigator    — export ATT&CK Navigator layer               │
 └──────────────────────────────────────────────────────────────────┘
          │
 ┌─ Telemetry pipeline ───────────────────────────────────────────┐

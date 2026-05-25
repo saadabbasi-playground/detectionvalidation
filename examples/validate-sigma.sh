@@ -13,6 +13,9 @@ set -euo pipefail
 
 RULES_DIR="${1:-./examples/detections/sigma}"
 AGENT_PORT="${AGENT_PORT:-9098}"
+RESULTS_JSON="/tmp/dv-results.json"
+REPORT_HTML="/tmp/dv-report.html"
+REPORT_SARIF="/tmp/dv-scan.sarif"
 
 echo "=== Step 1: Simulate attacks ==="
 dv attack --cve CVE-2021-44228 --target vagrant --agent-port "$AGENT_PORT"
@@ -21,10 +24,16 @@ dv attack --cve CVE-2021-26855 --target vagrant --agent-port "$AGENT_PORT"
 
 echo ""
 echo "=== Step 2: Validate detections (last 1 hour) ==="
-dv validate "$RULES_DIR" --siem opensearch --since 1
+dv validate "$RULES_DIR" --siem opensearch --since 1 --format json -o "$RESULTS_JSON"
 
 echo ""
-echo "=== Step 3: CVE coverage analysis ==="
+echo "=== Step 3: Generate reports ==="
+dv report --results "$RESULTS_JSON"                                         # CLI summary
+dv report --results "$RESULTS_JSON" --format html   -o "$REPORT_HTML"      # HTML page
+dv report --results "$RESULTS_JSON" --format sarif  -o "$REPORT_SARIF"     # SARIF
+
+echo ""
+echo "=== Step 4: CVE coverage analysis ==="
 dv ingest "$RULES_DIR" -o /tmp/canonical.jsonl
 dv map -i /tmp/canonical.jsonl -o /tmp/mapped.jsonl --mode hybrid
 dv cve-coverage \
@@ -33,5 +42,7 @@ dv cve-coverage \
 
 echo ""
 echo "Done."
+echo "  HTML report:           $REPORT_HTML"
+echo "  SARIF file:            $REPORT_SARIF"
 echo "  OpenSearch Dashboards: https://localhost:5601"
 echo "  Splunk mock UI:        http://localhost:8000"
