@@ -3,6 +3,7 @@
 Multi-SIEM detection validation platform. Simulate CVE-based attacks, capture real auditd telemetry, and validate detection rules against live SIEM data — all on a MacBook M1.
 
 ```
+dv doctor  # check your environment before the first run
 dv attack  --cve CVE-2021-44228 --target vagrant --watch
 dv validate examples/detections/sigma/ --since 1 --format json | dv report
 dv match   --events events.jsonl examples/detections/sigma/ --since 0 --format json | dv report --format html -o report.html
@@ -47,19 +48,51 @@ Vagrant VM (Ubuntu 22.04)          Mac host
 
 ---
 
-## Step 1 — Start the SIEM stack
+## Step 0 — Check your environment
+
+Run this once after cloning to verify all prerequisites are in place:
 
 ```bash
 git clone <repo-url> detection-validator
 cd detection-validator
 
+uv venv && uv pip install -e ".[dev]" && source .venv/bin/activate
+
+dv doctor
+```
+
+`dv doctor` checks Python, Docker, Vagrant, running containers, the victim agent, and local intelligence caches. Fix any errors it reports before continuing.
+
+```
+dv doctor — environment pre-flight check
+
+  ✓ Python 3.12.5
+  ✓ uv 0.11.13
+  ✓ Docker 28.3.2
+  ✓ Docker daemon running
+  ✓ Docker network detectval-lab
+  ✓ Vagrant 2.4.9
+  ✓ Vagrant plugin vagrant-qemu
+  ✓ Vagrant VM running
+  ✓ OPENSEARCH_INITIAL_ADMIN_PASSWORD set
+  ✓ OpenSearch reachable (HTTP 200)
+  ✓ Splunk mock reachable (HTTP 200)
+  ✓ Victim agent reachable on port 9098 (Vagrant)
+  ✓ ATT&CK KB: 858 techniques
+  ✓ KEV cache: 1243 entries
+
+All checks passed.
+```
+
+`dv doctor --fix` will automatically download empty intelligence caches.
+
+---
+
+## Step 1 — Start the SIEM stack
+
+```bash
 # Set the OpenSearch admin password (required before starting)
 export OPENSEARCH_INITIAL_ADMIN_PASSWORD="<your-password>"
-
-# Create Python virtual environment
-uv venv
-uv pip install -e ".[dev]"
-source .venv/bin/activate
 
 # Start OpenSearch + Splunk + Vector shipper
 ./dv up lab --siem opensearch --profile tiny
@@ -489,6 +522,7 @@ Ready-to-use rules under `examples/detections/`:
 
 ```
 ┌─ CLI ──────────────────────────────────────────────────────────┐
+│  dv doctor       — pre-flight check: tools, containers, caches │
 │  dv attack       — simulate CVE exploit steps on victim        │
 │  dv validate     — query live SIEM, report PASS/FAIL per rule  │
 │  dv match        — same evaluation offline against a JSONL file│

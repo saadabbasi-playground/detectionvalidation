@@ -6,7 +6,8 @@ Multi-SIEM detection validation platform. Simulate CVE-based attacks against a r
 
 ```bash
 # Prerequisites: Docker 24+, Vagrant + vagrant-qemu, Python 3.12, uv
-./dv doctor
+# Check your environment first — fixes problems before they waste time
+dv doctor
 
 # Start SIEM stack
 export OPENSEARCH_INITIAL_ADMIN_PASSWORD="<your-password>"
@@ -25,10 +26,33 @@ vagrant ssh -c "sudo cat /var/log/audit/audit-events.jsonl" > events.jsonl
 dv match --events events.jsonl examples/detections/sigma/ --since 0 --format json | dv report
 ```
 
+## dv doctor
+
+Run `dv doctor` before your first use, or any time something isn't working.
+It checks 13 things and exits non-zero if any are broken:
+
+| Check | What it tests |
+|---|---|
+| Python, uv | version requirements |
+| Docker | installed, daemon running, `detectval-lab` network present |
+| Vagrant | installed, `vagrant-qemu` plugin, VM running |
+| OpenSearch | reachable at `https://localhost:9200` |
+| Splunk mock | reachable at `http://localhost:8000` |
+| `OPENSEARCH_INITIAL_ADMIN_PASSWORD` | env var set |
+| Victim agent | responds at `localhost:9098` or `9099` |
+| ATT&CK KB | local cache populated |
+| KEV cache | NVD/KEV data downloaded |
+
+```bash
+dv doctor          # show status of all checks
+dv doctor --fix    # also auto-download empty intelligence caches
+```
+
 ## Commands
 
 | Command | Description |
 |---|---|
+| `dv doctor` | Pre-flight check: tools, containers, victim agent, intelligence caches |
 | `dv attack` | Simulate CVE-based exploit steps against a victim |
 | `dv validate` | Query live SIEM for rule hits, report PASS/FAIL per rule |
 | `dv match` | Same evaluation offline against a local JSONL event file |
