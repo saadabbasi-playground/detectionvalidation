@@ -7,20 +7,23 @@ services:
     image: timberio/vector:0.39.0-debian
     container_name: dv-vector
     restart: unless-stopped
+    command: ["--config", "/etc/vector/vector.toml"]
     volumes:
-      - ../configs/vector/vector.toml:/etc/vector/vector.toml:ro
+      - ../../configs/vector.toml:/etc/vector/vector.toml:ro
       - victim-logs:/var/log/victim:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       VECTOR_LOG: ${VECTOR_LOG_LEVEL:-info}
       OPENSEARCH_HOST: ${OPENSEARCH_HOST:-opensearch}
       OPENSEARCH_PORT: ${OPENSEARCH_PORT:-9200}
-      SPLUNK_HEC_URL: ${SPLUNK_HEC_URL:-http://splunk:8088}
-      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-dv-hec-token}
+      OPENSEARCH_USERNAME: ${OPENSEARCH_USERNAME:-admin}
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD:-DetectVal123!}
+      SPLUNK_HEC_URL: ${SPLUNK_HEC_URL:-http://detectval-splunk:8088}
+      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-detectval-hec-token}
     ports:
       - "${VECTOR_API_PORT:-8686}:8686"
     networks:
-      - dv-net
+      - detectval-lab
     healthcheck:
       test: ["CMD", "vector", "--version"]
       interval: 30s
@@ -32,6 +35,10 @@ services:
         limits:
           memory: 256m
 
-volumes:
-  victim-logs:
+networks:
+  detectval-lab:
     external: true
+    name: detectval-lab
+
+volumes:
+  victim-logs: {}

@@ -17,17 +17,23 @@ type = "docker_logs"
 docker_host = "unix:///var/run/docker.sock"
 include_containers = ["dv-linux-victim", "dv-win-emulator"]
 
+# Synthetic syslog events for pipeline validation (active when victim containers are not running).
+[sources.demo_logs]
+type = "demo_logs"
+format = "syslog"
+interval = 5.0
+
 # ── Transforms ───────────────────────────────────────────────────────────────
 
 [transforms.parse_sysmon]
 type = "remap"
-inputs = ["victim_audit_logs", "docker_logs"]
+inputs = ["victim_audit_logs", "docker_logs", "demo_logs"]
 source = '''
   .source = "detection-validator"
   .host = get_env_var!("HOSTNAME")
   if is_string(.message) {
     parsed, err = parse_json(.message)
-    if err == null { . = merge(., parsed) }
+    if err == null { ., _ = merge(., parsed) }
   }
 '''
 
@@ -36,9 +42,22 @@ source = '''
 [sinks.opensearch_out]
 type = "elasticsearch"
 inputs = ["parse_sysmon"]
-endpoints = ["http://${OPENSEARCH_HOST:-opensearch}:${OPENSEARCH_PORT:-9200}"]
-index = "dv-telemetry-%Y.%m.%d"
+endpoints = ["https://${OPENSEARCH_HOST:-opensearch}:${OPENSEARCH_PORT:-9200}"]
 mode = "bulk"
+suppress_type_name = true
+api_version = "v8"
+
+  [sinks.opensearch_out.auth]
+  strategy = "basic"
+  user = "${OPENSEARCH_USERNAME:-admin}"
+  password = "${OPENSEARCH_PASSWORD:-DetectVal123!}"
+
+  [sinks.opensearch_out.bulk]
+  index = "dv-telemetry-%Y.%m.%d"
+
+  [sinks.opensearch_out.tls]
+  verify_certificate = false
+  verify_hostname = false
 
   [sinks.opensearch_out.request]
   timeout_secs = 30
@@ -49,3 +68,12 @@ inputs = ["parse_sysmon"]
 endpoint = "${SPLUNK_HEC_URL:-http://splunk:8088}"
 token = "${SPLUNK_HEC_TOKEN:-dv-hec-token}"
 index = "detection_validator"
+
+  [sinks.splunk_hec.encoding]
+  codec = "json"
+
+  [sinks.splunk_hec.acknowledgements]
+  enabled = false
+
+  [sinks.splunk_hec.healthcheck]
+  enabled = false

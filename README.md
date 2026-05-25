@@ -105,6 +105,8 @@ NAMES                             STATUS
 dv-opensearch                     Up X minutes (healthy)
 dv-opensearch-dashboards          Up X minutes (healthy)
 dv-redis                          Up X minutes (healthy)
+dv-vector                         Up X minutes (healthy)
+detectval-splunk                  Up X minutes (healthy)
 ```
 
 **7. Run the Python CLI**
@@ -142,7 +144,11 @@ implements the HEC ingest API, a basic search endpoint, and a dark-themed
 dashboard. It runs natively on ARM and requires no Splunk license.
 
 ```bash
-docker run -d --name splunk-hec -p 8088:8088 -p 8000:8088 detectval/splunk-hec:latest
+docker run -d --name detectval-splunk --network detectval-lab \
+  -p 8000:8088 -p 8088:8088 \
+  -v splunk-data:/data \
+  -e SPLUNK_HEC_TOKEN="detectval-hec-token" \
+  detectval/splunk-hec:latest
 ```
 
 **Option B — Splunk Enterprise via Rosetta 2 (emulation)**
