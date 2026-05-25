@@ -8,9 +8,103 @@ from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.table import Table
 
 console = Console()
 err_console = Console(stderr=True)
+
+
+def _render_results(
+    results: list,
+    detections: list,
+    elapsed: float,
+    output: str,
+    fmt: str,
+) -> None:
+    """Render RuleResult objects as a CLI table or JSON. Shared by validate and match."""
+    if fmt == "json":
+        out = open(output, "w", encoding="utf-8") if output != "-" else sys.stdout
+        try:
+            payload = [
+                {
+                    "rule_id": r.rule_id, "name": r.name,
+                    "techniques": r.techniques, "siem": r.siem,
+                    "query": r.query_desc, "hits": r.hit_count,
+                    "status": r.status, "error": r.error,
+                    "samples": r.sample_events[:1],
+                }
+                for r in results
+            ]
+            print(json.dumps(payload, indent=2, default=str), file=out)
+        finally:
+            if output != "-":
+                out.close()
+        return
+
+    tbl = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    tbl.add_column("Rule", style="white", max_width=38)
+    tbl.add_column("Techniques", style="cyan", max_width=22)
+    tbl.add_column("Hits", justify="right", width=5)
+    tbl.add_column("Source", width=11)
+    tbl.add_column("Status", width=8)
+
+    passed = failed = errors = skipped = 0
+    covered_techniques: set[str] = set()
+
+    for r in results:
+        icon, style = {
+            "pass":  ("✓", "green"),
+            "fail":  ("✗", "red"),
+            "error": ("!", "yellow"),
+            "skip":  ("–", "dim"),
+        }.get(r.status, ("?", "white"))
+
+        if r.status == "pass":
+            passed += 1
+            covered_techniques.update(r.techniques)
+        elif r.status == "fail":
+            failed += 1
+        elif r.status == "error":
+            errors += 1
+        else:
+            skipped += 1
+
+        tech_str = ", ".join(r.techniques[:3]) + ("…" if len(r.techniques) > 3 else "")
+        hit_str = str(r.hit_count) if r.status not in ("error", "skip") else "-"
+        tbl.add_row(r.name[:38], tech_str, hit_str, r.siem, f"[{style}]{icon} {r.status.upper()}[/]")
+
+        if r.status == "pass" and r.sample_events:
+            ev = r.sample_events[0]
+            snippet = (
+                ev.get("proctitle") or ev.get("cmd_output") or
+                ev.get("technique") or ev.get("key") or ""
+            )
+            if snippet:
+                tbl.add_row(f"  [dim]{str(snippet)[:60]}[/]", "", "", "", "")
+
+        if r.status == "error" and r.error:
+            tbl.add_row(f"  [yellow]{r.error[:70]}[/]", "", "", "", "")
+
+    console.print(tbl)
+    console.print()
+
+    total = len(results)
+    console.print(
+        f"[bold]Results:[/] {total} rule(s)  "
+        f"[green]{passed} PASS[/]  [red]{failed} FAIL[/]  "
+        f"[yellow]{errors} ERROR[/]  [dim]{skipped} SKIP[/]  "
+        f"({elapsed:.1f}s)"
+    )
+    if covered_techniques:
+        console.print(
+            f"[bold]Covered techniques:[/] [green]{', '.join(sorted(covered_techniques))}[/]"
+        )
+
+    if output != "-":
+        with open(output, "w", encoding="utf-8") as fh:
+            for det in detections:
+                print(det.model_dump_json(), file=fh)
+        err_console.print(f"\n[green]✓[/] Updated detections written to [bold]{output}[/]")
 
 
 @click.group()
@@ -53,14 +147,12 @@ def validate(rules: str, siem: str, since: float, index: str, output: str, fmt: 
     from detection_validator.parsers.registry import ParserRegistry
     from detection_validator.parsers.base import ParseError
     from detection_validator.validator.engine import validate_corpus, RuleResult
-    from rich.table import Table
     from rich.progress import Progress, SpinnerColumn, TextColumn
     from pathlib import Path as _Path
 
     registry = ParserRegistry()
     root = _Path(rules)
 
-    # ── Load rules ────────────────────────────────────────────────────────────
     files = [root] if root.is_file() else sorted(f for f in root.rglob("*") if f.is_file())
     detections = []
     for fp in files:
@@ -78,7 +170,6 @@ def validate(rules: str, siem: str, since: float, index: str, output: str, fmt: 
 
     err_console.print(f"[cyan]Loaded {len(detections)} rule(s)[/]  siem={siem}  since={since}h  index={index}\n")
 
-    # ── Run validation ────────────────────────────────────────────────────────
     t0 = _time.time()
     with Progress(SpinnerColumn(), TextColumn("{task.description}"),
                   transient=True, console=err_console) as prog:
@@ -88,98 +179,83 @@ def validate(rules: str, siem: str, since: float, index: str, output: str, fmt: 
         )
     elapsed = _time.time() - t0
 
-    # ── Format output ─────────────────────────────────────────────────────────
-    if fmt == "json":
-        out = open(output, "w", encoding="utf-8") if output != "-" else sys.stdout
+    _render_results(results, detections, elapsed, output, fmt)
+
+
+@main.command()
+@click.argument("rules", required=False, default=".")
+@click.option("--events", "-e", "events_file", required=True,
+              type=click.Path(exists=True),
+              help="JSONL event file to match against (e.g. audit-events.jsonl).")
+@click.option("--since", default=24.0, show_default=True,
+              help="Only match events from the last N hours (0 = all events).")
+@click.option("--output", "-o", default="-", show_default=True,
+              help="Write updated JSONL (with validation_status) to this file (- = stdout).")
+@click.option("--format", "fmt", default="cli", show_default=True,
+              type=click.Choice(["cli", "json"]))
+def match(rules: str, events_file: str, since: float, output: str, fmt: str) -> None:
+    """Match detection rules against a local JSONL event file (no SIEM needed).
+
+    Evaluates each rule in RULES against events in the JSONL file using the
+    same two-layer strategy as 'dv validate' (technique field + keyword tokens),
+    but entirely in-memory without querying a live SIEM.
+
+    Useful for CI pipelines, offline analysis, or replaying captured events.
+    Output is identical to 'dv validate' and pipes into 'dv report'.
+
+    \b
+    Workflow:
+      # Export events from the Vagrant VM
+      vagrant ssh -c "cat /var/log/audit/audit-events.jsonl" > events.jsonl
+
+      # Or export from OpenSearch via curl
+      curl -sk -u admin:"$OPENSEARCH_INITIAL_ADMIN_PASSWORD" \\
+        "https://localhost:9200/dv-telemetry-*/_search?size=1000" \\
+        -H 'Content-Type: application/json' \\
+        -d '{"query":{"match_all":{}}}' \\
+        | python3 -c "import json,sys; [print(json.dumps(h['_source'])) for h in json.load(sys.stdin)['hits']['hits']]" \\
+        > events.jsonl
+
+      # Match and report offline
+      dv match --events events.jsonl examples/detections/sigma/
+      dv match --events events.jsonl examples/detections/sigma/ --format json | dv report --format html -o report.html
+    """
+    import time as _time
+
+    from detection_validator.parsers.registry import ParserRegistry
+    from detection_validator.parsers.base import ParseError
+    from detection_validator.validator.matcher import match_corpus
+    from pathlib import Path as _Path
+
+    registry = ParserRegistry()
+    root = _Path(rules)
+    events_path = _Path(events_file)
+
+    files = [root] if root.is_file() else sorted(f for f in root.rglob("*") if f.is_file())
+    detections = []
+    for fp in files:
         try:
-            payload = [
-                {
-                    "rule_id": r.rule_id, "name": r.name,
-                    "techniques": r.techniques, "siem": r.siem,
-                    "query": r.query_desc, "hits": r.hit_count,
-                    "status": r.status, "error": r.error,
-                    "samples": r.sample_events[:1],
-                }
-                for r in results
-            ]
-            print(json.dumps(payload, indent=2, default=str), file=out)
-        finally:
-            if output != "-":
-                out.close()
-        return
+            parser = registry.find_parser(fp)
+            if parser is None:
+                continue
+            detections.append(parser.parse_file(fp))
+        except (ParseError, Exception):
+            continue
 
-    # CLI table
-    tbl = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
-    tbl.add_column("Rule", style="white", max_width=38)
-    tbl.add_column("Techniques", style="cyan", max_width=22)
-    tbl.add_column("Hits", justify="right", width=5)
-    tbl.add_column("SIEM", width=11)
-    tbl.add_column("Status", width=8)
+    if not detections:
+        err_console.print(f"[red]No parseable rules found in:[/] {rules}")
+        raise SystemExit(1)
 
-    passed = failed = errors = skipped = 0
-    covered_techniques: set[str] = set()
-
-    for r in results:
-        icon, style = {
-            "pass":  ("✓", "green"),
-            "fail":  ("✗", "red"),
-            "error": ("!", "yellow"),
-            "skip":  ("–", "dim"),
-        }.get(r.status, ("?", "white"))
-
-        if r.status == "pass":
-            passed += 1
-            covered_techniques.update(r.techniques)
-        elif r.status == "fail":
-            failed += 1
-        elif r.status == "error":
-            errors += 1
-        else:
-            skipped += 1
-
-        tech_str = ", ".join(r.techniques[:3]) + ("…" if len(r.techniques) > 3 else "")
-        hit_str = str(r.hit_count) if r.status not in ("error", "skip") else "-"
-        status_str = f"[{style}]{icon} {r.status.upper()}[/]"
-
-        tbl.add_row(r.name[:38], tech_str, hit_str, r.siem, status_str)
-
-        # Show sample event snippet for passing rules
-        if r.status == "pass" and r.sample_events:
-            ev = r.sample_events[0]
-            snippet = (
-                ev.get("proctitle") or ev.get("cmd_output") or
-                ev.get("technique") or ev.get("key") or ""
-            )
-            if snippet:
-                tbl.add_row(
-                    f"  [dim]{str(snippet)[:60]}[/]", "", "", "", "",
-                )
-
-        # Show error detail
-        if r.status == "error" and r.error:
-            tbl.add_row(f"  [yellow]{r.error[:70]}[/]", "", "", "", "")
-
-    console.print(tbl)
-    console.print()
-
-    total = len(results)
-    console.print(
-        f"[bold]Results:[/] {total} rule(s)  "
-        f"[green]{passed} PASS[/]  [red]{failed} FAIL[/]  "
-        f"[yellow]{errors} ERROR[/]  [dim]{skipped} SKIP[/]  "
-        f"({elapsed:.1f}s)"
+    err_console.print(
+        f"[cyan]Loaded {len(detections)} rule(s)[/]  "
+        f"events={events_path.name}  since={since}h\n"
     )
-    if covered_techniques:
-        console.print(
-            f"[bold]Covered techniques:[/] [green]{', '.join(sorted(covered_techniques))}[/]"
-        )
 
-    # ── Write updated detections (with validation_status) ─────────────────────
-    if output != "-":
-        with open(output, "w", encoding="utf-8") as fh:
-            for det in detections:
-                print(det.model_dump_json(), file=fh)
-        err_console.print(f"\n[green]✓[/] Updated detections written to [bold]{output}[/]")
+    t0 = _time.time()
+    results = match_corpus(detections, events_path, since_hours=since)
+    elapsed = _time.time() - t0
+
+    _render_results(results, detections, elapsed, output, fmt)
 
 
 @main.command()
