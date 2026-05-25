@@ -532,5 +532,151 @@ def navigator(detections: str, output: str, name: str, description: str) -> None
     )
 
 
+@main.command()
+@click.option("--cve", "cve_id", default=None,
+              help="CVE ID to simulate (e.g. CVE-2021-44228). Looks up the matching scenario.")
+@click.option("--scenario", "scenario_file", default=None,
+              type=click.Path(),
+              help="Path to a scenario YAML (alternative to --cve).")
+@click.option("--victim", default="dv-linux-victim", show_default=True,
+              help="Victim container name or hostname.")
+@click.option("--agent-port", default="9099", show_default=True,
+              help="Victim agent HTTP port.")
+@click.option("--watch", is_flag=True, default=False,
+              help="After the run, show the attack events that landed in OpenSearch.")
+@click.option("--delay", default=1.5, show_default=True,
+              help="Seconds between attack steps.")
+def attack(
+    cve_id: str | None,
+    scenario_file: str | None,
+    victim: str,
+    agent_port: str,
+    watch: bool,
+    delay: float,
+) -> None:
+    """Simulate a CVE-based attack against the Linux victim container.
+
+    Runs the atomic-runner against dv-linux-victim, which executes the
+    technique simulations and emits structured events that flow through
+    Vector into OpenSearch and Splunk.
+
+    \b
+    Prerequisites:
+      docker build --platform linux/arm64 -t detection-validator/linux-victim:dev docker/linux-victim/
+      docker build --platform linux/arm64 -t detection-validator/atomic-runner:dev docker/atomic-runner/
+      docker run -d --name dv-linux-victim --network detectval-lab ...
+
+    \b
+    Examples:
+      dv attack --cve CVE-2021-44228
+      dv attack --cve CVE-2021-34527 --watch
+      dv attack --scenario docker/atomic-runner/scenarios/proxylogon-cve-2021-26855.yml
+    """
+    import subprocess
+    import time as _time
+
+    # ── resolve scenario path ────────────────────────────────────────────────
+    _CVE_TO_SCENARIO = {
+        "CVE-2021-44228": "log4shell-cve-2021-44228.yml",
+        "CVE-2021-34527": "printnightmare-cve-2021-34527.yml",
+        "CVE-2021-26855": "proxylogon-cve-2021-26855.yml",
+    }
+    if cve_id:
+        cve_id = cve_id.upper().strip()
+        fname = _CVE_TO_SCENARIO.get(cve_id)
+        if fname is None:
+            err_console.print(f"[red]No built-in scenario for {cve_id}.[/]")
+            err_console.print(f"Available: {', '.join(_CVE_TO_SCENARIO)}")
+            raise SystemExit(1)
+        scenario_in_container = f"/scenarios/{fname}"
+    elif scenario_file:
+        scenario_in_container = scenario_file
+    else:
+        err_console.print("[red]Provide --cve or --scenario.[/]")
+        raise SystemExit(1)
+
+    # ── verify victim agent is reachable ────────────────────────────────────
+    import urllib.request
+    import urllib.error
+    agent_url = f"http://localhost:{agent_port}/health"
+    try:
+        urllib.request.urlopen(agent_url, timeout=3)
+    except Exception:
+        err_console.print(f"[red]✗ Victim agent not reachable at {agent_url}[/]")
+        err_console.print("  Start it with:  docker run -d --name dv-linux-victim \\")
+        err_console.print("    --network detectval-lab -p 9099:9099 \\")
+        err_console.print("    detection-validator/linux-victim:dev")
+        raise SystemExit(1)
+
+    # ── run the atomic-runner container ─────────────────────────────────────
+    console.print(f"\n[bold cyan]⚔  Running attack scenario[/]  cve={cve_id or scenario_file}")
+    console.print(f"   Victim: [yellow]{victim}[/]  agent: {agent_url}\n")
+
+    cmd = [
+        "docker", "run", "--rm",
+        "--network", "detectval-lab",
+        "-e", f"RUNNER_TARGET_HOST={victim}",
+        "-e", f"RUNNER_AGENT_PORT={agent_port}",
+        "-e", f"RUNNER_STEP_DELAY={delay}",
+        "detection-validator/atomic-runner:dev",
+        "run", "--scenario", scenario_in_container,
+    ]
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        err_console.print(f"[red]Runner exited with code {result.returncode}[/]")
+        raise SystemExit(result.returncode)
+
+    # ── optionally show events from OpenSearch ───────────────────────────────
+    if watch:
+        import urllib.request
+        import urllib.error
+
+        _time.sleep(5)  # let Vector flush
+        console.print("\n[bold]Attack events in OpenSearch (last 20):[/]\n")
+        os_url = "https://localhost:9200"
+        os_user = "admin"
+        os_pass = "DetectVal123!"
+        query = json.dumps({
+            "size": 20,
+            "query": {"term": {"source.keyword": "auditd-agent"}},
+            "_source": ["timestamp", "technique", "key", "exe", "uid", "cmd_output"],
+        }).encode()
+        try:
+            import base64
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            creds = base64.b64encode(f"{os_user}:{os_pass}".encode()).decode()
+            req = urllib.request.Request(
+                f"{os_url}/dv-telemetry-*/_search",
+                data=query,
+                headers={"Content-Type": "application/json", "Authorization": f"Basic {creds}"},
+            )
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                data = json.loads(resp.read())
+            hits = data.get("hits", {}).get("hits", [])
+            if not hits:
+                console.print("  [yellow]No auditd-agent events yet — Vector may still be flushing.[/]")
+            for h in hits:
+                s = h["_source"]
+                out = s.get("cmd_output", "")[:100].replace("\n", " ")
+                console.print(
+                    f"  [green]{s.get('technique','?'):12s}[/]  "
+                    f"[cyan]{s.get('key','?'):20s}[/]  "
+                    f"exe={s.get('exe','?'):30s}  uid={s.get('uid','?')}"
+                )
+                if out:
+                    console.print(f"    [dim]{out}[/]")
+        except Exception as exc:
+            err_console.print(f"[yellow]Could not query OpenSearch: {exc}[/]")
+
+    console.print(
+        f"\n[bold green]✓ Done.[/] View events:\n"
+        f"  OpenSearch Dashboards: [cyan]http://localhost:5601[/]\n"
+        f"  Splunk mock UI:        [cyan]http://localhost:8000[/]"
+    )
+
+
 if __name__ == "__main__":
     main()

@@ -51,6 +51,9 @@ services:
       - seccomp:unconfined
     environment:
       HOSTNAME: linux-victim
+      AGENT_PORT: "9099"
+    ports:
+      - "9099:9099"
     volumes:
       - victim-logs:/var/log/audit
     networks:
