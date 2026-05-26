@@ -36,7 +36,7 @@ services:
     environment:
       OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
     volumes:
-      - ./opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
+      - ./compose/siem/opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
     ports:
       - "${DASHBOARDS_PORT:-5601}:5601"
     depends_on:
