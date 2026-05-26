@@ -24,6 +24,7 @@ services:
       - "${VECTOR_API_PORT:-8686}:8686"
     networks:
       - detectval-lab
+      - dv-net
     healthcheck:
       test: ["CMD", "vector", "--version"]
       interval: 30s
@@ -39,6 +40,9 @@ networks:
   detectval-lab:
     external: true
     name: detectval-lab
+  dv-net:
+    external: true
+    name: detection-validator_dv-net
 
 volumes:
   victim-logs: {}
