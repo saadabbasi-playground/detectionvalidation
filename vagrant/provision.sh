@@ -31,6 +31,6 @@ touch /var/log/audit/audit-events.jsonl
 chmod 644 /var/log/audit/audit-events.jsonl
 
 echo ">>> Creating victim user..."
-id victim &>/dev/null || useradd -r -u 1001 -m -s /bin/bash victim
+id victim &>/dev/null || useradd -m -s /bin/bash victim
 
 echo ">>> Provisioning complete. Config files will be installed next."
