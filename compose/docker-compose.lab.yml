@@ -19,7 +19,7 @@ services:
       TARGET_WINDOWS: ${WINDOWS_MODE:-emulator}
       CALDERA_URL: ${CALDERA_URL:-}
     volumes:
-      - scenarios:/scenarios:ro
+      - ./scenarios:/scenarios:ro
       - lab-results:/results
     networks:
       - dv-net
@@ -83,7 +83,7 @@ services:
       RUNNER_DELAY: ${RUNNER_DELAY:-60}
       RUNNER_TECHNIQUES: ${RUNNER_TECHNIQUES:-}
     volumes:
-      - scenarios:/scenarios:ro
+      - ./scenarios:/scenarios:ro
       - lab-results:/results
     networks:
       - dv-net
