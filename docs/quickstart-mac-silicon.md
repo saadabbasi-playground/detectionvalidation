@@ -375,7 +375,14 @@ cd ..
 
 Now that everything is running, re-run `dv doctor`:
 
+> **Important:** there are two `doctor` commands — make sure you run the right one:
+> - `./dv doctor` — shell script, checks Docker/infrastructure only
+> - `dv doctor` — Python CLI, checks everything including Vagrant, ATT&CK KB, and KEV cache
+>
+> The venv must be active for `dv doctor` to work. If you see `command not found`, run `source .venv/bin/activate` first.
+
 ```bash
+source .venv/bin/activate
 dv doctor
 ```
 
@@ -400,11 +407,17 @@ dv doctor — environment pre-flight check
   ⚠ KEV cache empty
 ```
 
-Fix the KEV cache warning by downloading threat intelligence data:
+Fix the KEV cache warning by downloading threat intelligence data (the `--fix` flag does both in one step):
 
 ```bash
-dv intel update --source attack
-dv intel update --source cve
+dv doctor --fix
+```
+
+Or download each source individually:
+
+```bash
+dv intel update --source attack   # MITRE ATT&CK — 858 techniques
+dv intel update --source cve      # CISA KEV + EPSS risk scores
 ```
 
 Run `dv doctor` one more time to confirm everything is green.
