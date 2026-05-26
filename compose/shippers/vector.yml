@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     command: ["--config", "/etc/vector/vector.toml"]
     volumes:
-      - ../../configs/vector.toml:/etc/vector/vector.toml:ro
+      - ./configs/vector.toml:/etc/vector/vector.toml:ro
       - victim-logs:/var/log/victim:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
