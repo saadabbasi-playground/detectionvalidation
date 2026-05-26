@@ -11,7 +11,7 @@ FROM --platform=${BUILDPLATFORM} ${PYTHON_IMAGE} AS builder
 WORKDIR /build
 
 # Leverage layer caching: copy manifests before source
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
 # Install into system python so it can be copied cleanly to runtime stage
