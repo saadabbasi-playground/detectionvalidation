@@ -8,6 +8,9 @@ services:
     build:
       context: docker/attacker
       dockerfile: Dockerfile
+      args:
+        BUILDPLATFORM: ${BUILDPLATFORM:-linux/amd64}
+        TARGETPLATFORM: ${TARGETPLATFORM:-linux/amd64}
     image: ${REGISTRY:-detection-validator}/attacker:${TAG:-dev}
     container_name: dv-attacker
     restart: unless-stopped
