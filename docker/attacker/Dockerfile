@@ -23,8 +23,9 @@ RUN ARCH=$([ "${TARGETARCH}" = "arm64" ] && echo "arm64" || echo "amd64") && \
     chmod +x /usr/local/bin/nuclei && \
     rm /tmp/nuclei.zip
 
-# Install Atomic Red Team invoke-atomicredteam (Ruby port for Linux)
-RUN gem install invoke_atomic_red_team --no-document 2>/dev/null || true
+# Install Atomic Red Team invoke-atomicredteam (Ruby port for Linux); stub so glob never fails
+RUN gem install invoke_atomic_red_team --no-document 2>/dev/null; \
+    ls /usr/local/bin/invoke_atomic* 2>/dev/null || touch /usr/local/bin/invoke_atomic_stub
 
 # ---- runtime ---------------------------------------------------------------
 FROM --platform=${TARGETPLATFORM} ${KALI_IMAGE} AS runtime
@@ -35,12 +36,12 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /usr/local/bin/nuclei /usr/local/bin/nuclei
 COPY --from=builder /var/lib/gems /var/lib/gems
-COPY --from=builder /usr/local/bin/invoke_atomic* /usr/local/bin/ 2>/dev/null || true
+COPY --from=builder /usr/local/bin/invoke_atomic* /usr/local/bin/
 
 RUN groupadd -r attacker && useradd -r -g attacker -u 1000 -m attacker
 
 WORKDIR /home/attacker
-COPY scripts/ /home/attacker/scripts/ 2>/dev/null || true
+COPY scripts/ /home/attacker/scripts/
 
 USER attacker
 
