@@ -195,7 +195,13 @@ source .venv/bin/activate
 
 Your terminal prompt will change — it will show `(detection-validator)` at the beginning. This means the environment is active and the `dv` command is available.
 
-> **Every time you open a new Terminal window**, you must run `source .venv/bin/activate` again before using `dv`. If you ever see `dv: command not found`, this is why.
+> **Every time you open a new Terminal window**, you must run `source .venv/bin/activate` again before using `dv`.
+>
+> If you see `dv: command not found`, work through this checklist:
+>
+> 1. Activate the venv: `source .venv/bin/activate`
+> 2. If still not found, the package isn't installed yet: `uv pip install -e ".[dev]"`
+> 3. Verify it works: `dv --help`
 
 Verify the CLI works:
 
@@ -203,7 +209,7 @@ Verify the CLI works:
 dv --help
 ```
 
-You should see a list of commands. If you see `command not found`, the virtual environment is not active.
+You should see a list of commands.
 
 ---
 
