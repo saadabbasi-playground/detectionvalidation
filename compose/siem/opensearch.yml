@@ -8,6 +8,7 @@ services:
     container_name: dv-opensearch
     restart: unless-stopped
     environment:
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DetectVal123!}
       OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
       discovery.type: ${OPENSEARCH_DISCOVERY:-single-node}
       plugins.security.disabled: "true"
