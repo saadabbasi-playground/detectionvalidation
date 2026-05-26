@@ -11,16 +11,17 @@ services:
       OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DetectVal123!}
       OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
       discovery.type: ${OPENSEARCH_DISCOVERY:-single-node}
+      plugins.security.disabled: "true"
     volumes:
       - opensearch-data:/usr/share/opensearch/data
     ports:
       - "${OPENSEARCH_PORT:-9200}:9200"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf -k https://localhost:9200/_cluster/health -u admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DetectVal123!} || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
       interval: 30s
       timeout: 15s
       retries: 5
-      start_period: 90s
+      start_period: 60s
     networks:
       - dv-net
     deploy:
@@ -33,10 +34,8 @@ services:
     container_name: dv-opensearch-dashboards
     restart: unless-stopped
     environment:
-      OPENSEARCH_HOSTS: '["https://opensearch:9200"]'
-      OPENSEARCH_SSL_VERIFICATIONMODE: none
-      OPENSEARCH_USERNAME: admin
-      OPENSEARCH_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DetectVal123!}
+      OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
     ports:
       - "${DASHBOARDS_PORT:-5601}:5601"
     depends_on:
