@@ -6,7 +6,7 @@ name: detection-validator
 services:
   core:
     build:
-      context: ..
+      context: .
       dockerfile: docker/core/Dockerfile
       args:
         BUILDPLATFORM: ${BUILDPLATFORM:-linux/amd64}

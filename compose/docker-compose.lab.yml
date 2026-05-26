@@ -6,7 +6,7 @@ name: detection-validator
 services:
   attacker:
     build:
-      context: ../docker/attacker
+      context: docker/attacker
       dockerfile: Dockerfile
     image: ${REGISTRY:-detection-validator}/attacker:${TAG:-dev}
     container_name: dv-attacker
@@ -19,7 +19,7 @@ services:
       TARGET_WINDOWS: ${WINDOWS_MODE:-emulator}
       CALDERA_URL: ${CALDERA_URL:-}
     volumes:
-      - ../scenarios:/scenarios:ro
+      - scenarios:/scenarios:ro
       - lab-results:/results
     networks:
       - dv-net
@@ -38,7 +38,7 @@ services:
 
   linux-victim:
     build:
-      context: ../docker/linux-victim
+      context: docker/linux-victim
       dockerfile: Dockerfile
     image: ${REGISTRY:-detection-validator}/linux-victim:${TAG:-dev}
     container_name: dv-linux-victim
@@ -72,7 +72,7 @@ services:
 
   atomic-runner:
     build:
-      context: ../docker/atomic-runner
+      context: docker/atomic-runner
       dockerfile: Dockerfile
     image: ${REGISTRY:-detection-validator}/atomic-runner:${TAG:-dev}
     container_name: dv-atomic-runner
@@ -83,7 +83,7 @@ services:
       RUNNER_DELAY: ${RUNNER_DELAY:-60}
       RUNNER_TECHNIQUES: ${RUNNER_TECHNIQUES:-}
     volumes:
-      - ../scenarios:/scenarios:ro
+      - scenarios:/scenarios:ro
       - lab-results:/results
     networks:
       - dv-net

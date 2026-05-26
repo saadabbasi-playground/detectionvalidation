@@ -7,7 +7,7 @@ name: detection-validator
 services:
   win-victim:
     build:
-      context: ../docker/win-victim
+      context: docker/win-victim
       dockerfile: Dockerfile
     image: ${REGISTRY:-detection-validator}/win-victim:${TAG:-dev}
     container_name: dv-win-victim
