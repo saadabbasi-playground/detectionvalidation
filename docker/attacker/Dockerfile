@@ -1,11 +1,10 @@
 # syntax=docker/dockerfile:1.7
-# Kali-slim with Atomic Red Team runner, Caldera client, and nuclei.
-# Pin digests: run `make pin-digests` to update.
-ARG KALI_IMAGE=kalilinux/kali-rolling:latest
+# Attack simulation container — nuclei, Atomic Red Team, nmap.
+ARG BASE_IMAGE=ubuntu:22.04
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
 
-FROM --platform=${BUILDPLATFORM} ${KALI_IMAGE} AS builder
+FROM --platform=${BUILDPLATFORM} ${BASE_IMAGE} AS builder
 
 ARG NUCLEI_VERSION=3.2.9
 ARG TARGETARCH
@@ -28,7 +27,7 @@ RUN gem install invoke_atomic_red_team --no-document 2>/dev/null; \
     ls /usr/local/bin/invoke_atomic* 2>/dev/null || touch /usr/local/bin/invoke_atomic_stub
 
 # ---- runtime ---------------------------------------------------------------
-FROM --platform=${TARGETPLATFORM} ${KALI_IMAGE} AS runtime
+FROM --platform=${TARGETPLATFORM} ${BASE_IMAGE} AS runtime
 
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     curl nmap netcat-openbsd python3 python3-pip ruby git ca-certificates \
