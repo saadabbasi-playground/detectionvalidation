@@ -10,15 +10,12 @@ FROM --platform=${BUILDPLATFORM} ${PYTHON_IMAGE} AS builder
 
 WORKDIR /build
 
-# Install uv for fast dependency resolution
-RUN pip install --no-cache-dir uv==0.4.10
-
 # Leverage layer caching: copy manifests before source
 COPY pyproject.toml ./
 COPY src/ ./src/
 
 # Install into system python so it can be copied cleanly to runtime stage
-RUN uv pip install --system .
+RUN pip install --no-cache-dir .
 
 # ---- runtime ---------------------------------------------------------------
 FROM --platform=${TARGETPLATFORM} ${PYTHON_IMAGE} AS runtime
