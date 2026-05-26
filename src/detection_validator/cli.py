@@ -470,14 +470,22 @@ def doctor(fix: bool) -> None:
         else:
             warn("vagrant-qemu plugin missing", "run: vagrant plugin install vagrant-qemu")
 
-        # VM status — only meaningful inside the vagrant dir
+        # VM status — must run from the vagrant/ dir so Vagrant finds the Vagrantfile
         vagrant_dir = _Path(__file__).parents[2] / "vagrant"
         if vagrant_dir.exists():
-            rc3, status = run("vagrant", "status", "--machine-readable")
-            if "running" in status:
-                ok("Vagrant VM running")
-            else:
-                warn("Vagrant VM not running", "run: cd vagrant && vagrant up")
+            try:
+                r = subprocess.run(
+                    ["vagrant", "status", "--machine-readable"],
+                    capture_output=True, text=True, timeout=15,
+                    cwd=vagrant_dir,
+                )
+                status = (r.stdout + r.stderr).strip()
+                if "running" in status:
+                    ok("Vagrant VM running")
+                else:
+                    warn("Vagrant VM not running", "run: cd vagrant && vagrant up")
+            except Exception as exc:
+                warn("Vagrant VM status unknown", str(exc)[:60])
         else:
             warn("vagrant/ directory not found", "expected at project root")
 
