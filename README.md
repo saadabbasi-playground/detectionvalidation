@@ -1,71 +1,85 @@
 # detection-validator
 
-Multi-SIEM detection validation platform. Simulate CVE-based attacks, capture real auditd telemetry, and validate detection rules against live SIEM data — all on a MacBook M1.
-
-```
-dv doctor  # check your environment before the first run
-dv attack  --cve CVE-2021-44228 --target vagrant --watch
-dv validate examples/detections/sigma/ --since 1 --format json | dv report
-dv match   --events events.jsonl examples/detections/sigma/ --format json | dv report --format html -o report.html
-dv watch   examples/detections/sigma/ --events events.jsonl          # re-validate on every save
-dv migrate sigma splunk --rules detections/ -o searches.conf          # convert formats
-dv deploy  examples/detections/sigma/ --siem opensearch --dry-run     # push to SIEM
-dv badge   -d enriched.jsonl -o coverage.svg                          # coverage badge
-dv siem status && dv agent status                                      # inspect stack
-```
-
----
-
-## How it works
+Simulate real CVE-based attacks against a Linux victim, capture genuine kernel-level audit events, and test whether your detection rules actually fire — all on a single MacBook.
 
 ```
 Vagrant VM (Ubuntu 22.04)          Mac host
 ┌─────────────────────────┐        ┌──────────────────────────────────────┐
 │  auditd                 │        │  Docker                              │
-│  victim-agent.py        │──────▶ │  OpenSearch  (localhost:9200)        │
+│  victim-agent           │──────▶ │  OpenSearch  (localhost:9200)        │
 │  vector (shipper)       │  HEC   │  Splunk mock (localhost:8000/8088)   │
 └─────────────────────────┘        └──────────────────────────────────────┘
          ▲                                        │
          │ dv attack                              │ dv validate
-         └─ simulate CVE steps                   └─ query for technique hits
+         └─ simulate CVE exploit steps            └─ query for rule hits
 ```
 
-1. **`dv attack`** sends simulated exploit steps to the Vagrant VM. The victim agent executes them and writes audit events to `/var/log/audit/audit-events.jsonl`.
-2. **Vector** ships those events to OpenSearch and Splunk on the Mac host.
-3. **`dv validate`** loads your Sigma/Splunk/KQL detection rules, queries each SIEM for matching events, and reports PASS/FAIL per rule.
-4. **`dv match`** does the same evaluation entirely offline — no SIEM needed. Point it at a raw JSONL event file and it returns identical results in milliseconds.
-5. **`dv report`** takes results from either command and renders them as a CLI summary, SARIF file, or self-contained HTML page.
+---
+
+## What is `dv`?
+
+There are two separate tools, both called `dv`:
+
+| Tool | File | What it does |
+|---|---|---|
+| `./dv` | Shell script in project root | Starts/stops Docker containers (`./dv up`, `./dv down`) |
+| `dv` | Python CLI installed into `.venv/` | Runs attacks, validates rules, generates reports |
+
+> **In short:** use `./dv up` to start Docker containers. Use `dv doctor`, `dv validate`, `dv attack`, etc. for everything else.
 
 ---
 
 ## Prerequisites
 
-| Requirement | Version | Install |
-|---|---|---|
-| Docker Desktop | ≥ 4.27 | [docker.com](https://www.docker.com/products/docker-desktop/) |
-| Python | 3.12 | `brew install python@3.12` |
-| uv | latest | `brew install uv` |
-| Vagrant | latest | `brew install vagrant` |
-| vagrant-qemu plugin | latest | `vagrant plugin install vagrant-qemu` |
+You need these installed before anything will work.
 
-> **Apple Silicon (M1/M2/M3/M4):** fully supported. The Vagrant VM runs natively via QEMU + Apple Hypervisor Framework (no emulation).
+| Tool | Required version | Install command |
+|---|---|---|
+| Docker Desktop | ≥ 24 | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) |
+| Python | 3.12 | `brew install python@3.12` |
+| uv (Python package manager) | any | `brew install uv` |
+| Vagrant | any | `brew install vagrant` |
+| vagrant-qemu plugin | any | `vagrant plugin install vagrant-qemu` |
+
+> **Apple Silicon (M1/M2/M3/M4):** fully supported. The Vagrant VM runs natively via QEMU with Apple Hypervisor Framework — there is no emulation overhead.
 
 ---
 
-## Step 0 — Check your environment
+## Installation
 
-Run this once after cloning to verify all prerequisites are in place:
+Run these commands once, in order:
 
 ```bash
+# 1. Clone the repository
 git clone <repo-url> detection-validator
 cd detection-validator
 
-uv venv && uv pip install -e ".[dev]" && source .venv/bin/activate
+# 2. Create a Python virtual environment and install the tool
+uv venv
+uv pip install -e ".[dev]"
 
+# 3. Activate the virtual environment
+source .venv/bin/activate
+
+# 4. Confirm the CLI is available
+dv --help
+```
+
+> **Note:** every time you open a new terminal, run `source .venv/bin/activate` again before using `dv`. Or prefix every command with `.venv/bin/dv` if you prefer not to activate.
+
+---
+
+## Step 1 — Check your environment
+
+Before starting anything, run the pre-flight check:
+
+```bash
 dv doctor
 ```
 
-`dv doctor` checks Python, Docker, Vagrant, running containers, the victim agent, and local intelligence caches. Fix any errors it reports before continuing.
+This checks Python, Docker, Vagrant, the Docker network, running containers, the victim agent, and local intelligence caches. Fix any ✗ errors before continuing. ⚠ warnings are non-blocking.
+
+Expected output once everything is installed and running:
 
 ```
 dv doctor — environment pre-flight check
@@ -88,106 +102,142 @@ dv doctor — environment pre-flight check
 All checks passed.
 ```
 
-`dv doctor --fix` will automatically download empty intelligence caches.
+`dv doctor --fix` automatically downloads empty intelligence caches (ATT&CK knowledge base, CVE data).
 
 ---
 
-## Step 1 — Start the SIEM stack
+## Step 2 — Start the Docker stack
+
+The Docker stack runs OpenSearch (the SIEM), a Splunk mock receiver, Vector (the log shipper), and a Linux victim container.
 
 ```bash
-# Set the OpenSearch admin password (required before starting)
-export OPENSEARCH_INITIAL_ADMIN_PASSWORD="<your-password>"
+# Set the OpenSearch admin password — pick any strong password you like
+export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"
 
-# Start OpenSearch + Splunk + Vector shipper
+# Start the full lab stack
+# --profile tiny keeps memory usage low (~600 MB per service)
 ./dv up lab --siem opensearch --profile tiny
 ```
 
-Confirm everything is healthy after ~60 seconds:
+> **Important:** save this password in your shell profile so you don't have to type it every session:
+> ```bash
+> echo 'export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"' >> ~/.zshrc
+> source ~/.zshrc
+> ```
+> Every `dv validate`, `dv siem status`, and `dv deploy` command reads this environment variable.
+
+Wait about 60 seconds for containers to become healthy, then check:
 
 ```bash
 docker ps --format "table {{.Names}}\t{{.Status}}"
 ```
 
 Expected output:
+
 ```
 NAMES                          STATUS
-dv-opensearch                  Up X minutes (healthy)
-dv-opensearch-dashboards       Up X minutes (healthy)
-dv-redis                       Up X minutes (healthy)
-dv-vector                      Up X minutes (healthy)
-detectval-splunk               Up X minutes (healthy)
+dv-linux-victim                Up 2 minutes (healthy)
+dv-vector                      Up 2 minutes (healthy)
+dv-opensearch                  Up 2 minutes (healthy)
+dv-opensearch-dashboards       Up 2 minutes (healthy)
+detectval-splunk               Up 2 minutes (healthy)
 ```
 
-> **Tip:** Use `--profile tiny` on a 16 GB MacBook to keep memory usage under control (≤1 GB per service).
+Every container should say `(healthy)`. If one says `(starting)`, wait another 30 seconds and check again.
+
+Verify OpenSearch is accepting connections:
+
+```bash
+dv siem status
+```
+
+Expected:
+
+```
+✓ OpenSearch 2.14.0  at https://localhost:9200
+  dv-telemetry-*: 0 documents
+  .opendistro-alerting-alert*: 0 documents
+```
 
 ---
 
-## Step 2 — Start the Vagrant VM
+## Step 3 — Start the Vagrant VM
 
-The Vagrant VM runs a real Ubuntu 22.04 kernel with `auditd`, giving you genuine syscall-level telemetry. This is required for realistic detection validation on Mac (Docker on Mac cannot expose the audit subsystem to containers).
+The Vagrant VM runs a real Ubuntu 22.04 kernel with `auditd`. This gives you genuine syscall-level telemetry — the kind detection rules actually need to fire against. Docker containers on Mac cannot expose the kernel audit subsystem, which is why a VM is required.
 
 ```bash
 cd vagrant
-vagrant up      # first run: ~5 minutes to provision
+vagrant up
 ```
 
-This provisions:
-- `auditd` with rules that tag syscalls with ATT&CK technique IDs
-- `victim-agent.py` — HTTP server on port 9099 that executes simulated attack steps and records audit events
-- `vector` — ships audit events from `/var/log/audit/audit-events.jsonl` to OpenSearch and Splunk on the Mac host
+First run takes about 5 minutes to download the box and provision the VM. Subsequent runs take ~30 seconds. You will see a lot of output — that is normal.
 
-Verify services are running:
+Once it finishes, verify the services inside the VM are running:
 
 ```bash
 vagrant ssh -c "systemctl status victim-agent vector --no-pager"
 ```
 
-Verify the agent is reachable from the Mac host:
+Both should show `active (running)`.
+
+Verify the agent is reachable from your Mac:
 
 ```bash
 curl http://localhost:9098/health
-# Expected: {"status": "ok", "host": "dv-victim", "mode": "vm"}
 ```
 
-> **Port mapping:** host `9098` → VM `9099`. The Vagrantfile uses QEMU's `extra_netdev_args` to forward this port on the same SLiRP network interface as SSH.
+Expected:
+
+```json
+{"status": "ok", "host": "dv-victim", "mode": "vm"}
+```
+
+> **Port note:** host port `9098` forwards to VM port `9099`. The Vagrantfile wires this up automatically — you do not need to configure anything.
+
+Now go back to the project root:
+
+```bash
+cd ..
+```
 
 ---
 
-## Step 3 — Simulate an attack
+## Step 4 — Simulate an attack
+
+Pick a CVE scenario and simulate the exploit steps against the Vagrant VM:
 
 ```bash
-# From the project root (not the vagrant/ directory)
 dv attack --cve CVE-2021-44228 --target vagrant --agent-port 9098 --watch
 ```
 
-The `--watch` flag waits 5 seconds for Vector to flush, then shows the events that landed in OpenSearch:
+The `--watch` flag waits 5 seconds for Vector to flush the events to OpenSearch, then prints a confirmation. You should see:
 
 ```
 ⚔  Running attack scenario  cve=CVE-2021-44228  target=vagrant
-   Victim: dv-linux-victim  agent: http://localhost:9098/health
 
 Scenario: Log4Shell Remote Code Execution
   CVE: CVE-2021-44228  CVSS: 10.0
 
   ✓ T1190     key=network_connect  rc=0
   ✓ T1059.004 key=shell_exec       rc=0
-    uid=0(root) gid=0(root) groups=0(root) root Linux dv-victim 5.15.0-143-generic
+    uid=0(root) gid=0(root) groups=0(root)
 
 ✓ 2 steps executed.
 
 Attack events in OpenSearch (last 20):
   T1190         network_connect   exe=/usr/bin/curl   uid=33
   T1059.004     shell_exec        exe=/bin/bash       uid=33
-    uid=0(root) gid=0(root) ...
 ```
 
 ### Available CVE scenarios
 
-| CVE | Scenario | Techniques simulated |
+| CVE | Vulnerability | ATT&CK techniques simulated |
 |---|---|---|
-| CVE-2021-44228 | Log4Shell RCE | T1190, T1059.004 |
-| CVE-2021-34527 | PrintNightmare | T1068, T1547.012, T1574.001 |
-| CVE-2021-26855 | ProxyLogon SSRF | T1190, T1505.003, T1078 |
+| `CVE-2021-44228` | Log4Shell RCE | T1190 (exploitation), T1059.004 (shell execution) |
+| `CVE-2021-34527` | PrintNightmare | T1068 (privilege escalation), T1547.012 (persistence), T1574.001 (hijacking) |
+| `CVE-2021-26855` | ProxyLogon SSRF | T1190 (exploitation), T1505.003 (web shell), T1078 (valid accounts) |
+
+Run multiple scenarios to build up telemetry:
 
 ```bash
 dv attack --cve CVE-2021-34527 --target vagrant --agent-port 9098 --watch
@@ -196,60 +246,120 @@ dv attack --cve CVE-2021-26855 --target vagrant --agent-port 9098 --watch
 
 ---
 
-## Step 4 — Validate detections
+## Step 5 — Validate your detections
 
 ```bash
 dv validate examples/detections/sigma/ --since 1
 ```
 
-This loads every Sigma rule under `examples/detections/sigma/`, translates each to a live OpenSearch query, and reports whether the rule fired against telemetry from the last hour:
+This loads every Sigma rule in that directory, builds a query for each one, runs it against OpenSearch, and reports PASS or FAIL:
 
 ```
- Rule                       Techniques              Hits  SIEM         Status
- LSASS Memory Dump          T1003.001                  0  opensearch   ✗ FAIL
- Log4Shell JNDI Injection   T1190, T1059.004           6  opensearch   ✓ PASS
- MSHTA Spawning Shell       T1218.005, T1059.001       0  opensearch   ✗ FAIL
- Nmap Port Scan Detected    T1046                      0  opensearch   ✗ FAIL
- PrintNightmare Spooler     T1068, T1547.012           4  opensearch   ✓ PASS
- ProxyLogon Exchange SSRF   T1190, T1505.003           5  opensearch   ✓ PASS
- Test                       T1499, T1059.004           3  opensearch   ✓ PASS
+ Rule                            Techniques              Hits  SIEM         Status
+ LSASS Memory Dump via TM        T1003.001                  0  opensearch   ✗ FAIL
+ Log4Shell JNDI Injection        T1190, T1059.004           6  opensearch   ✓ PASS
+ MSHTA Spawning Windows Shell    T1218.005, T1059.001       0  opensearch   ✗ FAIL
+ Nmap Port Scan Detected         T1046                      0  opensearch   ✗ FAIL
+ PrintNightmare Spooler Abuse    T1068, T1547.012           4  opensearch   ✓ PASS
+ ProxyLogon Exchange SSRF        T1190, T1505.003           5  opensearch   ✓ PASS
+ Test                            T1499, T1059.004           3  opensearch   ✓ PASS
 
 Results: 7 rule(s)  4 PASS  3 FAIL  0 ERROR  0 SKIP  (1.3s)
-Covered techniques: T1059.004, T1068, T1078, T1190, T1499, T1505.003, T1547.012, T1574.001
 ```
 
-**Why do LSASS, MSHTA, and Nmap fail?** Those are Windows-specific or require an active port scan. The Linux VM only generates Linux syscall events, so rules targeting Windows processes will always show no hits.
+> **Why do LSASS, MSHTA, and Nmap fail?** Those rules target Windows processes (lsass.exe, mshta.exe) or require an active port scan. The Vagrant VM runs Linux, so those events are never generated. This is expected — the rules are correct, there is simply no matching telemetry.
 
-### How validation works
+### How a rule passes
 
-A rule **PASSES** if the SIEM returns at least one hit matching either:
-- The ATT&CK technique IDs declared in the rule's tags (e.g. `attack.T1190`), matched against the `technique` field in the index, **or**
-- Keywords extracted from the rule's `detection` section, matched against `proctitle`, `cmd_output`, and `message` fields.
+A rule **PASSES** if OpenSearch returns at least one event matching:
+- The ATT&CK technique IDs in the rule's tags (e.g. `attack.T1190`), matched against the `technique` field, **or**
+- Keywords from the rule's `detection` block, matched against `proctitle`, `cmd_output`, and `message` fields.
 
-### Validate against both SIEMs
+### Time window
 
-```bash
-dv validate examples/detections/sigma/ --siem opensearch,splunk --since 24
-```
-
-### Other options
+`--since 1` means "look at the last 1 hour". If you ran attacks more than an hour ago, increase the window:
 
 ```bash
-# Extend the time window (useful if attacks were run earlier)
-dv validate examples/detections/sigma/ --since 48
-
-# Output JSON for scripting
-dv validate examples/detections/sigma/ --format json | python3 -m json.tool
-
-# Write updated JSONL with validation_status field
-dv validate examples/detections/sigma/ -o validated.jsonl
+dv validate examples/detections/sigma/ --since 24    # last 24 hours
+dv validate examples/detections/sigma/ --since 48    # last 48 hours
 ```
 
 ---
 
-## Step 4b — Match offline (no SIEM needed)
+## Step 6 — Generate a report
 
-`dv match` evaluates the same rules against a local JSONL file instead of querying a live SIEM. Use it in CI, for replaying captured events, or when the Docker stack isn't running.
+### CLI summary
+
+```bash
+dv validate examples/detections/sigma/ --since 24 --format json | dv report
+```
+
+> **How the pipe works:** `dv validate` writes progress messages to stderr (your terminal) and JSON results to stdout. `dv report` reads JSON from stdin. The pipe connects them correctly — you do not need to add any redirects.
+
+Output:
+
+```
+╭─────── Validation Summary ────────╮
+│ Rules:       7                    │
+│ Pass:        4 (57%)              │
+│ Fail:        3                    │
+│ Error:       0                    │
+│ Skip:        0                    │
+│                                   │
+│ Techniques:  8 covered / 12 total │
+│ Generated:   2026-05-26 04:26 UTC │
+╰───────────────────────────────────╯
+
+Failing rules
+  Rule                 Techniques        SIEM        Status
+  LSASS Memory Dump    T1003.001         opensearch  ✗ FAIL
+  MSHTA Spawning       T1218.005,T1059   opensearch  ✗ FAIL
+  Nmap Port Scan       T1046             opensearch  ✗ FAIL
+
+ATT&CK Tactic Coverage
+  Tactic                   Coverage      Techniques covered
+  Credential Access        0/1 (0%)      —
+  Defense Evasion          1/2 (50%)     T1078
+  Execution                1/2 (50%)     T1059.004
+  Impact                   1/1 (100%)    T1499
+  Initial Access           1/1 (100%)    T1190
+  Persistence              2/2 (100%)    T1505.003, T1547.012
+  Privilege Escalation     2/2 (100%)    T1068, T1574.001
+
+Passing rules (4): Log4Shell JNDI Injection, PrintNightmare, ProxyLogon, Test
+```
+
+### HTML report
+
+```bash
+dv validate examples/detections/sigma/ --since 24 --format json | dv report --format html -o report.html
+open report.html
+```
+
+### SARIF (for GitHub Code Scanning)
+
+```bash
+dv validate examples/detections/sigma/ --since 24 --format json | dv report --format sarif -o scan.sarif
+```
+
+Upload `scan.sarif` to GitHub Code Scanning and failing rules appear as annotations on pull requests.
+
+### Save results first, report later
+
+```bash
+# Save results to a file
+dv validate examples/detections/sigma/ --since 24 --format json -o results.json
+
+# Render the saved results later
+dv report --results results.json
+dv report --results results.json --format html -o report.html
+```
+
+---
+
+## Step 7 — Match offline (no SIEM needed)
+
+`dv match` evaluates rules against a local JSONL file instead of querying a live SIEM. Use this in CI or when the Docker stack is not running.
 
 ### Export events from the Vagrant VM
 
@@ -260,7 +370,7 @@ vagrant ssh -c "sudo cat /var/log/audit/audit-events.jsonl" > events.jsonl
 ### Export events from OpenSearch
 
 ```bash
-curl -sk -u admin:"$OPENSEARCH_INITIAL_ADMIN_PASSWORD" \
+curl -sk -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" \
   "https://localhost:9200/dv-telemetry-*/_search?size=1000" \
   -H 'Content-Type: application/json' \
   -d '{"query":{"term":{"source.keyword":"auditd-agent"}}}' \
@@ -274,166 +384,39 @@ for h in json.load(sys.stdin)['hits']['hits']:
 ### Run the match
 
 ```bash
-dv match --events events.jsonl examples/detections/sigma/ --since 2
-```
-
-Output is identical to `dv validate`:
-
-```
- Rule                       Techniques              Hits  Source  Status
- LSASS Memory Dump          T1003.001                  0  local   ✗ FAIL
- Log4Shell JNDI Injection   T1190, T1059.004           8  local   ✓ PASS
-   T1190
- PrintNightmare Spooler     T1068, T1547.012           4  local   ✓ PASS
-   setuid(0) attempt, current uid: 0
- ProxyLogon Exchange SSRF   T1190, T1505.003           6  local   ✓ PASS
- Test                       T1499, T1059.004           5  local   ✓ PASS
-   /bin/bash -c curl -sk http://127.0.0.1:8080/ ...
-
-Results: 7 rule(s)  4 PASS  3 FAIL  0 ERROR  0 SKIP  (0.0s)
-```
-
-Note the `(0.0s)` — 18,000 events evaluated in milliseconds with no network round-trips.
-
-### Pipe into dv report
-
-```bash
 dv match --events events.jsonl examples/detections/sigma/ --since 0 --format json | dv report
-dv match --events events.jsonl examples/detections/sigma/ --since 0 --format json | dv report --format html -o report.html
 ```
 
-### validate vs match
-
-| | `dv validate` | `dv match` |
-|---|---|---|
-| Event source | Live SIEM query | Local JSONL file |
-| Requires SIEMs running | Yes | No |
-| Tests full ingestion pipeline | Yes | No |
-| Speed | ~1–2 s (network) | < 0.1 s (in-memory) |
-| Works in offline CI | No | Yes |
+`--since 0` means "use all events in the file regardless of timestamp". Notice the evaluation time — it is usually under 0.05 seconds because everything runs in memory with no network calls.
 
 ---
 
-## Step 5 — Generate a report
+## Offline analysis pipeline
 
-`dv report` reads the JSON output from `dv validate` and renders it in the format you need.
-
-### Pipe directly from validate
+This sequence parses, maps, and enriches your rules entirely on disk — no SIEM or network required.
 
 ```bash
-# CLI summary (default)
-dv validate examples/detections/sigma/ --since 1 --format json | dv report
+# 1. Parse all rule files into a unified JSON format
+dv ingest examples/detections/sigma/ -o canonical.jsonl
 
-# Self-contained HTML page
-dv validate examples/detections/sigma/ --since 1 --format json | dv report --format html -o report.html
+# 2. Validate and map rules to ATT&CK techniques
+dv map -i canonical.jsonl -o mapped.jsonl
 
-# SARIF 2.1.0 for GitHub Code Scanning
-dv validate examples/detections/sigma/ --since 1 --format json | dv report --format sarif -o scan.sarif
+# 3. Fill in technique names, CVE metadata, and severity scores
+dv enrich -i mapped.jsonl -o enriched.jsonl
 ```
 
-### Save results first, then report
+After enrichment you can:
 
 ```bash
-dv validate examples/detections/sigma/ --since 1 --format json -o results.json
-dv report --results results.json --format html -o report.html
-```
+# Generate an ATT&CK Navigator layer (shows which techniques you cover)
+dv navigator -d enriched.jsonl -o layer.json
+# Open https://mitre-attack.github.io/attack-navigator/
+# Click "Open Existing Layer" → "Upload from local" → select layer.json
 
-### CLI report output
-
-```
-╭─────── Validation Summary ────────╮
-│ Rules:       7                    │
-│ Pass:        4 (57%)              │
-│ Fail:        3                    │
-│ Error:       0                    │
-│ Skip:        0                    │
-│                                   │
-│ Techniques:  8 covered / 12 total │
-│ Generated:   2026-05-25 09:45 UTC │
-╰───────────────────────────────────╯
-
-Failing rules
-  Rule                    Techniques         SIEM        Status
-  LSASS Memory Dump       T1003.001          opensearch  ✗ FAIL
-  MSHTA Spawning Shell    T1218.005,T1059    opensearch  ✗ FAIL
-  Nmap Port Scan          T1046              opensearch  ✗ FAIL
-
-ATT&CK Tactic Coverage
-  Tactic                   Coverage       Techniques covered
-  Credential Access        0/1 (0%)       —
-  Defense Evasion          1/2 (50%)      T1078
-  Execution                1/2 (50%)      T1059.004
-  Impact                   1/1 (100%)     T1499
-  Initial Access           1/1 (100%)     T1190
-  Persistence              2/2 (100%)     T1505.003, T1547.012
-  Privilege Escalation     2/2 (100%)     T1068, T1574.001
-
-Passing rules (4): Log4Shell JNDI Injection, PrintNightmare, ProxyLogon, Test
-```
-
-### Report formats
-
-| Format | Use case |
-|---|---|
-| `cli` | Interactive terminal summary with tactic coverage breakdown |
-| `json` | Pretty-printed results for scripting or downstream tools |
-| `sarif` | GitHub Code Scanning — failing rules appear as PR annotations |
-| `html` | Self-contained dark-theme page with summary cards and coverage bars |
-
-### SARIF in GitHub Actions
-
-Upload the SARIF file to GitHub Code Scanning so failing rules appear as annotations on pull requests:
-
-```yaml
-- name: Validate detections
-  run: |
-    dv validate detections/ --since 24 --format json | \
-    dv report --format sarif -o scan.sarif
-
-- name: Upload SARIF
-  uses: github/codeql-action/upload-sarif@v3
-  with:
-    sarif_file: scan.sarif
-```
-
----
-
-## Step 6 — View telemetry
-
-### OpenSearch Dashboards
-
-```
-https://localhost:5601
-```
-Login with the admin credentials you set in `OPENSEARCH_INITIAL_ADMIN_PASSWORD`. Go to **Discover** and select the `dv-telemetry-*` index pattern.
-
-Useful KQL queries:
-
-| Query | What it shows |
-|---|---|
-| `host: dv-victim` | All events from the Vagrant VM |
-| `technique.keyword: T1190` | Exploitation events (network callbacks) |
-| `technique.keyword: T1059.004` | Shell execution events |
-| `host: dv-victim AND technique.keyword: T1068` | Privilege escalation on the VM |
-| `proctitle: jndi OR cmd_output: jndi` | Free-text search for Log4Shell payloads |
-
-Set the time range (top right) to cover your last attack run.
-
-### Splunk mock UI
-
-```
-http://localhost:8000
-```
-
-Search: `index=* host=dv-victim | head 20`
-
-### Direct API query
-
-```bash
-curl -sk -u admin:"$OPENSEARCH_INITIAL_ADMIN_PASSWORD" \
-  "https://localhost:9200/dv-telemetry-*/_search?pretty&size=5&sort=timestamp:desc" \
-  -H 'Content-Type: application/json' \
-  -d '{"query": {"term": {"host.keyword": "dv-victim"}}}'
+# Generate a coverage badge
+dv badge -d enriched.jsonl --format json    # JSON metrics
+dv badge -d enriched.jsonl -o coverage.svg  # SVG badge
 ```
 
 ---
@@ -443,59 +426,58 @@ curl -sk -u admin:"$OPENSEARCH_INITIAL_ADMIN_PASSWORD" \
 This workflow answers: *"Do I have detections for the techniques an attacker would use to exploit this CVE?"*
 
 ```bash
-# Step 1 — update local intelligence caches (ATT&CK STIX bundle, CISA KEV, NVD, EPSS)
+# 1. Update local intelligence caches (run once; re-run monthly)
 dv intel update --source attack
 dv intel update --source cve
 
-# Step 2 — parse and normalize all detection rules
+# 2. Build the enriched corpus (same pipeline as above)
 dv ingest examples/detections/ -o canonical.jsonl
-
-# Step 3 — map rules to ATT&CK techniques
-dv map -i canonical.jsonl -o mapped.jsonl --mode hybrid
-
-# Step 4 — enrich with technique names, CVE metadata, and severity
+dv map -i canonical.jsonl -o mapped.jsonl
 dv enrich -i mapped.jsonl -o enriched.jsonl
 
-# Step 5 — analyze coverage for a CVE
-dv cve-coverage --cve CVE-2021-44228,CVE-2021-34527,CVE-2021-26855 \
-  --detections enriched.jsonl
+# 3. Analyze coverage for one or more CVEs
+dv cve-coverage --cve CVE-2021-44228 -d enriched.jsonl
+dv cve-coverage --cve CVE-2021-44228,CVE-2021-34527,CVE-2021-26855 -d enriched.jsonl
 ```
 
 Sample output:
 
 ```
-CVE-2021-44228  KEV  CVSS=10.0  EPSS=0.945  coverage=67%  residual_risk=3.149
-  ✓ T1059  execution     conf=0.85  ← Log4Shell JNDI Injection Attempt
-  ✓ T1190  initial-access conf=0.80  ← Log4Shell JNDI Injection Attempt
-  ✗ T1499  impact        conf=0.60
-
-CVE-2021-34527  KEV  CVSS=8.8   EPSS=0.942  coverage=0%   residual_risk=8.293
-  (no techniques mapped — add explicit attack.TXXXX tags to your rules)
+CVE-2021-44228  KEV  CVSS=10.0  EPSS=0.945  coverage=100%  residual_risk=0.000
+  ✓ T1059  execution      conf=0.85   ← Log4Shell JNDI Injection Attempt
+  ✓ T1190  initial-access conf=0.80   ← Log4Shell JNDI Injection Attempt
+  ✓ T1499  impact         conf=0.60   ← Test
 ```
 
 **Reading the output:**
-- **KEV** — listed in CISA's Known Exploited Vulnerabilities catalog (actively exploited in the wild)
-- **EPSS** — probability this CVE is exploited within 30 days (source: FIRST.org)
-- **residual_risk** — `CVSS × EPSS × (1 − coverage_ratio)`; closer to 0 is better
-- **conf** — mapping confidence (explicit rule tag = 1.0; CTID dataset ≈ 0.90; CWE inference = varies)
+
+| Field | Meaning |
+|---|---|
+| **KEV** | This CVE is in CISA's Known Exploited Vulnerabilities catalog — actively exploited in the wild |
+| **CVSS** | Severity score from NVD (0–10, higher = worse) |
+| **EPSS** | Probability of exploitation in the next 30 days (source: FIRST.org) |
+| **coverage** | Percentage of mapped techniques covered by at least one detection |
+| **residual_risk** | `CVSS × EPSS × (1 − coverage)` — how much uncovered risk remains; lower is better |
+| **conf** | Mapping confidence: 1.0 = explicit rule tag; ~0.85 = CTID dataset; varies for CWE inference |
 
 ### Closing a coverage gap
 
-If `cve-coverage` shows ✗ for a technique, add it to a detection rule:
+If `cve-coverage` shows ✗ for a technique, add that technique to a rule:
 
 ```yaml
+# In your Sigma rule's tags section:
 tags:
-    - attack.T1499          # the uncovered technique
+    - attack.T1499          # the technique you want to cover
     - cve.2021.44228        # links this rule to the CVE in coverage reports
 ```
 
-Then re-run `ingest → map → enrich → cve-coverage` to confirm the gap closes.
+Then re-run `ingest → map → enrich → cve-coverage` to confirm the gap is closed.
 
 ---
 
-## Rule migration
+## Format conversion (migrate)
 
-Convert rules between formats without touching a SIEM:
+Convert detection rules between formats without touching a SIEM:
 
 ```bash
 # Sigma → Splunk savedsearches.conf
@@ -504,90 +486,321 @@ dv migrate sigma splunk --rules examples/detections/sigma/ -o searches.conf
 # Sigma → KQL (Azure Sentinel / Microsoft Defender)
 dv migrate sigma kql --rules examples/detections/sigma/ -o queries.kql
 
-# Normalise and re-export as clean Sigma YAML
+# Normalize and re-export as clean Sigma YAML
 dv migrate sigma sigma --rules examples/detections/sigma/ -o normalised/
 ```
 
-## Deploying rules to a SIEM
+---
 
-Push rules directly to a running SIEM so they fire automatically:
+## Deploy rules to a live SIEM
+
+Push rules directly to a running SIEM so they fire automatically on new events.
 
 ```bash
-# Preview first — no changes made
+# Always preview first — this makes no changes
 dv deploy examples/detections/sigma/ --siem opensearch --dry-run
 
-# Deploy — creates one OpenSearch Alerting monitor per rule
-export OPENSEARCH_INITIAL_ADMIN_PASSWORD="<your-password>"
+# Deploy for real — creates one OpenSearch Alerting monitor per rule
 dv deploy examples/detections/sigma/ --siem opensearch
 
-# Deploy to Splunk (creates saved searches with hourly schedule)
+# Deploy to Splunk — creates saved searches with an hourly schedule
 dv deploy examples/detections/sigma/ --siem splunk
 ```
 
-## Continuous validation with dv watch
+---
 
-Stay in a tight feedback loop while writing rules:
+## Live rule development with watch
+
+`dv watch` polls your rules directory and re-runs validation every time you save a file:
 
 ```bash
-# Re-match against a local event file every time you save a rule
+# Fast offline feedback — re-matches against a local event file on every save
 dv watch examples/detections/sigma/ --events events.jsonl
 
-# Or query the live SIEM — re-validates whenever a rule file changes
+# Live feedback — re-queries OpenSearch on every save
 dv watch examples/detections/sigma/ --siem opensearch --since 1
 
-# Faster polling for active development
+# Increase polling frequency during active development
 dv watch examples/detections/sigma/ --events events.jsonl --interval 2
 ```
 
-## Coverage badge
+Press `Ctrl+C` to stop.
 
-Generate a badge showing your detection coverage for README or dashboards:
+---
 
-```bash
-# SVG badge (shields.io flat style)
-dv badge -d enriched.jsonl -o coverage.svg
-
-# JSON metrics for scripting
-dv badge -d enriched.jsonl --format json -o badge.json
-```
-
-Badge colour: green ≥ 70 %, yellow ≥ 40 %, red below that.
-
-## SIEM and agent inspection
+## Inspect the running stack
 
 ```bash
-# Check OpenSearch version, connectivity, and telemetry document count
+# Check OpenSearch version, connectivity, and document counts
 dv siem status
-dv siem status --type splunk
 
 # Run a test query and show the most recent events
 dv siem test --size 5
 
 # Check victim agent health
 dv agent status
-dv agent status --port 9099
 
-# Fetch the last 30 minutes of events from the agent
-dv agent logs --since 0.5 --limit 50
+# Check SIEM and agent in one line
+dv siem status && dv agent status
 ```
 
 ---
 
-## ATT&CK Navigator export
+## View telemetry in OpenSearch Dashboards
 
-Visualize which techniques your detections cover:
+Open `https://localhost:5601` in your browser. Log in with username `admin` and the password you set in `OPENSEARCH_INITIAL_ADMIN_PASSWORD`.
+
+Go to **Discover** and select the `dv-telemetry-*` index pattern. Set the time range (top right) to cover your last attack run.
+
+Useful KQL queries:
+
+| Query | What it shows |
+|---|---|
+| `host: dv-victim` | All events from the Vagrant VM |
+| `technique.keyword: T1190` | Exploitation events |
+| `technique.keyword: T1059.004` | Shell execution events |
+| `technique.keyword: T1068` | Privilege escalation events |
+| `proctitle: jndi` | Free-text search for Log4Shell payloads |
+
+### Direct API access
 
 ```bash
-dv navigator -d enriched.jsonl -o coverage-layer.json
-# Open https://mitre-attack.github.io/attack-navigator/
-# → Open Existing Layer → Upload from local → select coverage-layer.json
+# List the 5 most recent events
+curl -sk -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" \
+  "https://localhost:9200/dv-telemetry-*/_search?size=5&sort=timestamp:desc&pretty"
+
+# Search for a specific technique
+curl -sk -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" \
+  "https://localhost:9200/dv-telemetry-*/_search?pretty" \
+  -H 'Content-Type: application/json' \
+  -d '{"query": {"term": {"technique.keyword": "T1190"}}}'
 ```
 
 ---
 
-## Example detection rules
+## Telemetry field reference
 
-Ready-to-use rules under `examples/detections/`:
+Events written by the victim agent contain these fields:
+
+| Field | Example | What it means |
+|---|---|---|
+| `technique` | `T1190` | ATT&CK technique ID that was simulated |
+| `key` | `network_connect` | The audit rule that fired |
+| `exe` | `/usr/bin/curl` | Full path of the process that ran |
+| `uid` | `33` | Numeric UID of the process (33 = www-data) |
+| `cmd_output` | `uid=0(root)...` | Captured output of the command |
+| `host` | `dv-victim` | Hostname of the source machine |
+| `cve` | `CVE-2021-44228` | CVE scenario that generated this event |
+| `timestamp` | `2026-05-26T04:26:00Z` | ISO 8601 UTC |
+
+---
+
+## Writing detection rules
+
+Rules live in `examples/detections/sigma/`. Each is a YAML file.
+
+Minimum working rule:
+
+```yaml
+title: My Detection Rule
+id: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+status: experimental
+description: Detects something suspicious
+logsource:
+    category: process_creation
+detection:
+    keywords:
+        - suspicious_process
+    condition: keywords
+tags:
+    - attack.T1059.004
+level: high
+```
+
+Key fields:
+
+| Field | What it does |
+|---|---|
+| `id` | Unique UUID. Generate one: `python3 -c "import uuid; print(uuid.uuid4())"` |
+| `tags` | Links the rule to ATT&CK techniques (`attack.T1234`) and CVEs (`cve.2021.44228`) |
+| `detection.keywords` | Simple string matching against event fields |
+| `level` | Severity: `informational` / `low` / `medium` / `high` / `critical` |
+
+After writing a rule, test it immediately:
+
+```bash
+# Offline — instant, no SIEM needed
+dv match --events events.jsonl examples/detections/sigma/ --since 0
+
+# Or live against OpenSearch
+dv validate examples/detections/sigma/ --since 24
+```
+
+---
+
+## Vagrant VM reference
+
+```bash
+cd vagrant
+
+vagrant up          # create and provision VM (~5 min on first run)
+vagrant ssh         # open a shell inside the VM
+vagrant halt        # stop the VM (preserves disk)
+vagrant destroy -f  # delete the VM entirely
+
+# Re-run provisioning after editing files/ or provision.sh
+vagrant provision
+
+# Check all three services inside the VM
+vagrant ssh -c "systemctl status victim-agent vector auditd --no-pager"
+
+# Watch audit events arriving in real time
+vagrant ssh -c "tail -f /var/log/audit/audit-events.jsonl"
+```
+
+---
+
+## Docker stack reference
+
+```bash
+# Start the lab with OpenSearch (recommended)
+./dv up lab --siem opensearch --profile tiny
+
+# Start with Splunk Enterprise (amd64 only — not available on Apple Silicon)
+./dv up lab --siem splunk --profile standard
+
+# Start both SIEMs at once
+./dv up lab --siem opensearch,splunk
+
+# Stop everything
+./dv down lab --siem opensearch
+
+# Check status
+./dv status
+
+# Tail logs from a container
+./dv logs dv-opensearch -f
+./dv logs dv-vector -f
+./dv logs dv-linux-victim -f
+```
+
+### Resource profiles
+
+| Profile | RAM per service | Recommended for |
+|---|---|---|
+| `tiny` | ~600 MB | 16 GB MacBook, or any machine where Docker feels sluggish |
+| `standard` | ~1 GB | 32 GB MacBook with plenty of headroom |
+| `full` | 2 GB+ | CI servers or dedicated machines |
+
+---
+
+## GitHub Actions
+
+Add detection validation to your CI pipeline:
+
+```yaml
+name: Validate detections
+on: [push, pull_request]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install detection-validator
+        run: pip install uv && uv pip install --system .
+
+      - name: Match offline
+        run: |
+          dv match --events tests/fixtures/events.jsonl \
+            detections/ --since 0 --format json | \
+          dv report --format sarif -o scan.sarif
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: scan.sarif
+```
+
+---
+
+## Troubleshooting
+
+### `dv: command not found`
+
+The virtual environment is not active. Run:
+
+```bash
+source .venv/bin/activate
+```
+
+Or use the full path: `.venv/bin/dv`
+
+### `dv doctor` shows "OpenSearch auth failed"
+
+Make sure the password environment variable matches what OpenSearch was started with:
+
+```bash
+export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"
+dv siem status    # confirms the password works
+```
+
+### OpenSearch container fails to start — `vm.max_map_count too low`
+
+```bash
+docker run --rm --privileged alpine sysctl -w vm.max_map_count=262144
+./dv up lab --siem opensearch --profile tiny
+```
+
+### Containers restart or run out of memory
+
+In Docker Desktop → Settings → Resources → Memory: set to at least **6 GB**.
+
+Then use the `tiny` profile:
+
+```bash
+./dv up lab --siem opensearch --profile tiny
+```
+
+### Vagrant VM fails to start — QEMU / HVF error
+
+Make sure Docker Desktop and Terminal have full disk access in System Settings → Privacy & Security.
+
+```bash
+vagrant plugin update vagrant-qemu
+cd vagrant && vagrant destroy -f && vagrant up
+```
+
+### `dv validate` shows 0 hits for all rules
+
+The default `--since 1` window looks back only 1 hour. If your attacks ran earlier, extend the window:
+
+```bash
+dv validate examples/detections/sigma/ --since 24
+```
+
+Also confirm events landed in OpenSearch:
+
+```bash
+dv siem status          # check document count
+dv siem test --size 5   # show sample events
+```
+
+### `dv match` returns 0 hits
+
+Check that your events file is not empty and is valid JSON:
+
+```bash
+wc -l events.jsonl                              # should be > 0
+head -1 events.jsonl | python3 -m json.tool    # should print valid JSON
+```
+
+---
+
+## Example detections
+
+Ready-to-use rules in `examples/detections/`:
 
 | Format | File | CVE | Techniques |
 |---|---|---|---|
@@ -596,16 +809,42 @@ Ready-to-use rules under `examples/detections/`:
 | Sigma | `sigma/proxylogon_exchange_ssrf.yml` | CVE-2021-26855 | T1190, T1505.003, T1078 |
 | Sigma | `sigma/credential_dump_lsass.yml` | — | T1003.001 |
 | Sigma | `sigma/network_scan_nmap.yml` | — | T1046 |
-| Splunk | `splunk/dns_beaconing.spl` | — | T1071.004 |
+| Splunk | `splunk/savedsearches.conf` | — | T1059.001, T1570 |
 | KQL | `kql/sentinel_aad_password_spray.yml` | — | T1110.003 |
-| Elastic EQL | `elastic/credential_access_mimikatz.json` | — | T1003 |
+
+---
+
+## Command reference
+
+| Command | What it does |
+|---|---|
+| `dv doctor` | Pre-flight check: Python, Docker, Vagrant, SIEMs, agent, caches |
+| `dv doctor --fix` | Same, plus auto-download empty intelligence caches |
+| `dv attack` | Execute CVE exploit steps against the victim VM |
+| `dv validate` | Query live SIEM for rule hits, report PASS/FAIL |
+| `dv match` | Same evaluation offline against a local JSONL event file |
+| `dv report` | Render results as CLI summary / SARIF / HTML |
+| `dv watch` | Re-validate automatically whenever rule files change |
+| `dv ingest` | Parse Sigma/Splunk/KQL/YARA/EQL rules to canonical JSONL |
+| `dv map` | Map parsed rules to ATT&CK techniques |
+| `dv enrich` | Fill technique names, CVE metadata, and severity |
+| `dv migrate` | Convert rules between formats (sigma → splunk / kql / sigma) |
+| `dv deploy` | Push rules to a live SIEM as alerting monitors or saved searches |
+| `dv badge` | Generate an SVG or JSON ATT&CK coverage badge |
+| `dv siem status` | Check SIEM connectivity and document counts |
+| `dv siem test` | Run a test query and display sample events |
+| `dv agent status` | Check victim agent health endpoint |
+| `dv agent logs` | Fetch recent events from the victim agent |
+| `dv cve-coverage` | Analyze detection coverage gaps per CVE |
+| `dv navigator` | Export ATT&CK Navigator layer from detection corpus |
+| `dv intel update` | Refresh local ATT&CK, CVE, EPSS, KEV caches |
 
 ---
 
 ## Architecture
 
 ```
-┌─ CLI ──────────────────────────────────────────────────────────┐
+┌─ Python CLI (dv) ──────────────────────────────────────────────┐
 │  dv doctor       — pre-flight check: tools, containers, caches │
 │  dv attack       — simulate CVE exploit steps on victim        │
 │  dv validate     — query live SIEM, report PASS/FAIL per rule  │
@@ -622,128 +861,44 @@ Ready-to-use rules under `examples/detections/`:
 │  dv agent        — check agent health, fetch recent events     │
 │  dv cve-coverage — analyze coverage gaps per CVE               │
 │  dv navigator    — export ATT&CK Navigator layer               │
-└──────────────────────────────────────────────────────────────────┘
-         │
+└────────────────────────────────────────────────────────────────┘
+
+┌─ Shell script (./dv) ──────────────────────────────────────────┐
+│  ./dv up lab --siem opensearch   — start Docker containers     │
+│  ./dv down lab                   — stop Docker containers      │
+│  ./dv status                     — show running services       │
+│  ./dv logs <service>             — tail container logs         │
+└────────────────────────────────────────────────────────────────┘
+
 ┌─ Telemetry pipeline ───────────────────────────────────────────┐
-│                                                                  │
-│  Vagrant VM (Ubuntu 22.04 ARM64)                                │
-│    auditd → /var/log/audit/audit-events.jsonl                   │
-│    victim-agent (port 9099) ← dv attack                         │
-│    vector → OpenSearch (9200) + Splunk HEC (8088)               │
-│                                                                  │
-│  Docker victim (Linux, synthetic events)                        │
-│    docker logs → vector → OpenSearch + Splunk HEC              │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-         │
+│  Vagrant VM (Ubuntu 22.04 ARM64)                               │
+│    auditd → /var/log/audit/audit-events.jsonl                  │
+│    victim-agent (port 9099) ← dv attack                        │
+│    vector → OpenSearch (9200) + Splunk HEC (8088)              │
+│                                                                 │
+│  Docker linux-victim container (synthetic events)              │
+│    stdout → vector → OpenSearch + Splunk HEC                   │
+└────────────────────────────────────────────────────────────────┘
+
 ┌─ SIEMs ────────────────────────────────────────────────────────┐
-│  OpenSearch  localhost:9200   Dashboards: localhost:5601        │
-│  Splunk mock localhost:8088   UI:         localhost:8000        │
-└──────────────────────────────────────────────────────────────────┘
+│  OpenSearch  localhost:9200   Dashboards: localhost:5601       │
+│  Splunk mock localhost:8088   UI:         localhost:8000       │
+└────────────────────────────────────────────────────────────────┘
 ```
-
-### Telemetry fields
-
-Events written by the victim agent include:
-
-| Field | Example | Description |
-|---|---|---|
-| `technique` | `T1190` | ATT&CK technique ID |
-| `key` | `network_connect` | Audit rule that fired |
-| `exe` | `/usr/bin/curl` | Process executable path |
-| `uid` | `33` | UID of the process (33 = www-data) |
-| `cmd_output` | `uid=0(root)...` | Command output captured |
-| `host` | `dv-victim` | Source hostname |
-| `cve` | `CVE-2021-44228` | CVE linked to the attack step |
-| `timestamp` | `2026-05-25T09:04:03Z` | ISO 8601 UTC |
 
 ---
 
-## Vagrant VM reference
+## Apple Silicon notes
 
-```bash
-cd vagrant
-
-vagrant up          # create and provision VM (~5 min first time)
-vagrant ssh         # shell into VM
-vagrant halt        # stop VM
-vagrant destroy -f  # remove VM entirely
-
-# Re-run provisioning after changing files/
-vagrant provision
-
-# Check services inside the VM
-vagrant ssh -c "systemctl status victim-agent vector auditd --no-pager"
-
-# Watch audit events as they arrive
-vagrant ssh -c "tail -f /var/log/audit/audit-events.jsonl"
-```
-
-The VM uses port 9098 (host) → 9099 (guest) for the victim agent, so it does not conflict with the Docker victim container (9099).
-
----
-
-## Apple Silicon (M1/M2/M3/M4)
-
-Fully supported. All core services run natively on ARM64.
+All core services run natively on ARM64.
 
 | Component | ARM64 status |
 |---|---|
 | OpenSearch + Dashboards | ✅ native |
-| Splunk mock (HEC) | ✅ native (Python) |
-| Vagrant VM via QEMU/HVF | ✅ native ARM64 |
+| Splunk mock (HEC) | ✅ native (Python-based) |
+| Vagrant VM via QEMU/HVF | ✅ native ARM64 kernel |
 | Docker Linux victim | ✅ native |
-| Splunk Enterprise | ❌ amd64-only — use the mock or `--siem opensearch` |
-
-**OpenSearch fails with `vm.max_map_count too low`:**
-```bash
-docker run --rm --privileged alpine sysctl -w vm.max_map_count=262144
-```
-
-**Out of memory / containers restarting:**
-```bash
-# In Docker Desktop → Settings → Resources → Memory → set to ≥ 6 GB
-./dv up lab --siem opensearch --profile tiny
-```
-
-**`dv` command not found:**
-```bash
-source .venv/bin/activate
-which dv   # should point inside .venv/bin/
-```
-
----
-
-## Resource profiles
-
-```bash
-./dv up lab --profile tiny      # ≤1 GB RAM per service (recommended for 16 GB MacBook)
-./dv up lab --profile standard  # 4 GB RAM per service
-./dv up lab --profile full      # 8 GB+ RAM, all optional services
-```
-
----
-
-## GitHub Action
-
-```yaml
-jobs:
-  validate:
-    uses: your-org/detection-validator/.github/workflows/detection-validation.yml@main
-    with:
-      rules-path: detections/
-      siem: opensearch
-      output-format: sarif
-```
-
-Or as a composite action step:
-
-```yaml
-- uses: your-org/detection-validator/actions/validate@main
-  with:
-    rules-path: detections/
-    siem: opensearch
-```
+| Splunk Enterprise | ❌ amd64 only — use `--siem opensearch` instead |
 
 ---
 
