@@ -14,8 +14,6 @@ services:
     image: ${REGISTRY:-detection-validator}/core:${TAG:-dev}
     container_name: dv-core
     restart: unless-stopped
-    env_file:
-      - ${DV_PROFILE_FILE:-profiles/standard.env}
     environment:
       DV_ENV: ${DV_ENV:-development}
       DV_LOG_LEVEL: ${DV_LOG_LEVEL:-INFO}
