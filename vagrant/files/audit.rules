@@ -1,6 +1,8 @@
 ## detection-validator audit rules
 ## Captures process execution, network activity, privilege escalation,
 ## and sensitive file access — covering key ATT&CK techniques.
+## ARM64 (aarch64) only — b32 rules omitted; old syscalls replaced with
+## their *at variants which are the only ones present on ARM64.
 
 # Delete existing rules and set buffer size
 -D
@@ -11,7 +13,6 @@
 
 # ── Execution (T1059 - Command and Scripting Interpreter) ────────────────────
 -a always,exit -F arch=b64 -S execve -k exec
--a always,exit -F arch=b32 -S execve -k exec
 
 # Track interpreter launches specifically
 -w /bin/bash -p x -k shell_exec
@@ -23,13 +24,10 @@
 
 # ── Network connections (T1190 - Exploit Public-Facing Application) ──────────
 -a always,exit -F arch=b64 -S connect -k network_connect
--a always,exit -F arch=b32 -S connect -k network_connect
--a always,exit -F arch=b64 -S accept -k network_accept
--a always,exit -F arch=b32 -S accept -k network_accept
+-a always,exit -F arch=b64 -S accept4 -k network_accept
 
 # ── Privilege escalation (T1068, T1548) ─────────────────────────────────────
 -a always,exit -F arch=b64 -S setuid -S setgid -S setreuid -S setregid -k priv_change
--a always,exit -F arch=b32 -S setuid -S setgid -S setreuid -S setregid -k priv_change
 -a always,exit -F arch=b64 -S fchmod -S fchmodat -k file_permission
 -w /usr/bin/sudo -p x -k sudo_exec
 -w /usr/bin/su -p x -k su_exec
@@ -49,7 +47,7 @@
 -w /root/.ssh -p rwa -k ssh_key
 
 # ── Defense evasion (T1070 - Indicator Removal) ─────────────────────────────
--a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -k file_delete
+-a always,exit -F arch=b64 -S unlinkat -S renameat -k file_delete
 -w /var/log -p wa -k log_modify
 
 # ── Lateral movement / discovery (T1049, T1082) ──────────────────────────────
