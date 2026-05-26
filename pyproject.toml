@@ -51,6 +51,7 @@ dev = [
 
 [project.scripts]
 detection-validator = "detection_validator.cli:main"
+dv = "detection_validator.cli:main"
 dv-agent = "detection_validator.orchestrator.worker:start"
 
 [tool.hatch.build.targets.wheel]
