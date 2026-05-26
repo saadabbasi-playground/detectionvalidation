@@ -18,7 +18,7 @@ COPY pyproject.toml ./
 COPY src/ ./src/
 
 # Install into system python so it can be copied cleanly to runtime stage
-RUN uv pip install --system --no-cache .
+RUN uv pip install --system .
 
 # ---- runtime ---------------------------------------------------------------
 FROM --platform=${TARGETPLATFORM} ${PYTHON_IMAGE} AS runtime
@@ -27,7 +27,7 @@ RUN groupadd -r dv && useradd -r -g dv -u 1000 -m dv
 
 # Copy installed packages and entry-point scripts from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin/detection-validator /usr/local/bin/detection-validator 2>/dev/null || true
+COPY --from=builder /usr/local/bin/detection-validator /usr/local/bin/detection-validator
 
 USER dv
 WORKDIR /app
