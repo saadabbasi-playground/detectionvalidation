@@ -30,7 +30,7 @@
 # ── Privilege escalation (T1068, T1548) ─────────────────────────────────────
 -a always,exit -F arch=b64 -S setuid -S setgid -S setreuid -S setregid -k priv_change
 -a always,exit -F arch=b32 -S setuid -S setgid -S setreuid -S setregid -k priv_change
--a always,exit -F arch=b64 -S chmod -S fchmod -S fchmodat -k file_permission
+-a always,exit -F arch=b64 -S fchmod -S fchmodat -k file_permission
 -w /usr/bin/sudo -p x -k sudo_exec
 -w /usr/bin/su -p x -k su_exec
 
