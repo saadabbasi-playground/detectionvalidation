@@ -46,7 +46,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512m
+          memory: ${DASHBOARDS_MEMORY:-1g}
 
 volumes:
   opensearch-data:
