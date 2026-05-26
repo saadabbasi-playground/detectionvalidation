@@ -35,7 +35,8 @@ services:
     restart: unless-stopped
     environment:
       OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
-      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
+    volumes:
+      - ./opensearch_dashboards.yml:/usr/share/opensearch-dashboards/config/opensearch_dashboards.yml:ro
     ports:
       - "${DASHBOARDS_PORT:-5601}:5601"
     depends_on:
