@@ -210,7 +210,7 @@ def match(rules: str, events_file: str, since: float, output: str, fmt: str) -> 
 
       # Or export from OpenSearch via curl
       curl -sk -u admin:"$OPENSEARCH_INITIAL_ADMIN_PASSWORD" \\
-        "https://localhost:9200/dv-telemetry-*/_search?size=1000" \\
+        "http://localhost:9200/dv-telemetry-*/_search?size=1000" \\
         -H 'Content-Type: application/json' \\
         -d '{"query":{"match_all":{}}}' \\
         | python3 -c "import json,sys; [print(json.dumps(h['_source'])) for h in json.load(sys.stdin)['hits']['hits']]" \\
@@ -771,7 +771,7 @@ def siem_status(siem_type: str) -> None:
         ctx.verify_mode = ssl.CERT_NONE
         creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode()
         headers = {"Authorization": f"Basic {creds}"}
-        base = "https://localhost:9200"
+        base = "http://localhost:9200"
         try:
             req = urllib.request.Request(base, headers=headers)
             with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
@@ -840,7 +840,7 @@ def siem_test(siem_type: str, index: str, size: int) -> None:
             "_source": ["timestamp", "technique", "key", "exe", "uid", "cmd_output"],
         }).encode()
         req = urllib.request.Request(
-            f"https://localhost:9200/{index}/_search",
+            f"http://localhost:9200/{index}/_search",
             data=query,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Basic {creds}"},
@@ -1213,7 +1213,7 @@ def deploy(rules: str, siem: str, index: str, dry_run: bool) -> None:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode()
-        base_url = "https://localhost:9200/_plugins/_alerting/monitors"
+        base_url = "http://localhost:9200/_plugins/_alerting/monitors"
 
         for det in detections:
             techs = [t.full_id for t in det.mitre_techniques]
@@ -2108,7 +2108,7 @@ def attack(
 
         _time.sleep(5)  # let Vector flush
         console.print("\n[bold]Attack events in OpenSearch (last 20):[/]\n")
-        os_url = "https://localhost:9200"
+        os_url = "http://localhost:9200"
         os_user = "admin"
         os_pass = "DetectVal123!"
         query = json.dumps({

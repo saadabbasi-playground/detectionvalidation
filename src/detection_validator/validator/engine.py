@@ -145,7 +145,7 @@ def _build_os_query(
 class OpenSearchValidator:
     def __init__(
         self,
-        host: str = "https://localhost:9200",
+        host: str = "http://localhost:9200",
         user: str = "admin",
         password: str = "DetectVal123!",
         index: str = "dv-telemetry-*",
@@ -360,7 +360,7 @@ def validate_corpus(
     detections: list[Any],
     siem: str = "opensearch",
     since_hours: float = 24.0,
-    os_host: str = "https://localhost:9200",
+    os_host: str = "http://localhost:9200",
     os_user: str = "admin",
     os_pass: str = "DetectVal123!",
     os_index: str = "dv-telemetry-*",
