@@ -104,8 +104,8 @@ siem_arm_compat_check() {
         case "$siem" in
             splunk|splunk-uf)
                 if is_arm; then
-                    warn "Splunk official images do not support ARM64 natively."
-                    warn "Alternatives: --siem opensearch  or  --siem wazuh"
+                    warn "Splunk official images do not support ARM64 natively." >&2
+                    warn "Alternatives: --siem opensearch  or  --siem wazuh" >&2
                 fi
                 ;;
         esac
@@ -152,21 +152,21 @@ build_compose_cmd() {
             case "$win_mode" in
                 container)
                     if is_arm; then
-                        warn "Windows containers require amd64. Falling back to win-emulator on ARM."
+                        warn "Windows containers require amd64. Falling back to win-emulator on ARM." >&2
                         win_mode="emulator"
                     else
                         compose_files+=("-f" "${COMPOSE_DIR}/docker-compose.windows.yml")
-                        ok "Windows containers enabled (amd64)."
+                        ok "Windows containers enabled (amd64)." >&2
                     fi
                     ;;
                 emulator)
                     if is_arm; then
-                        echo -e "${YELLOW}┌─────────────────────────────────────────────────────────────────┐${RESET}"
-                        echo -e "${YELLOW}│  ARM64 detected — using win-emulator instead of win-victim      │${RESET}"
-                        echo -e "${YELLOW}│  Windows Sysmon events will be synthesised from a script lib.   │${RESET}"
-                        echo -e "${YELLOW}│  Trade-off: emulated events lack live kernel telemetry.         │${RESET}"
-                        echo -e "${YELLOW}│  Override: ./dv up lab --windows external (point to real host)  │${RESET}"
-                        echo -e "${YELLOW}└─────────────────────────────────────────────────────────────────┘${RESET}"
+                        echo -e "${YELLOW}┌─────────────────────────────────────────────────────────────────┐${RESET}" >&2
+                        echo -e "${YELLOW}│  ARM64 detected — using win-emulator instead of win-victim      │${RESET}" >&2
+                        echo -e "${YELLOW}│  Windows Sysmon events will be synthesised from a script lib.   │${RESET}" >&2
+                        echo -e "${YELLOW}│  Trade-off: emulated events lack live kernel telemetry.         │${RESET}" >&2
+                        echo -e "${YELLOW}│  Override: ./dv up lab --windows external (point to real host)  │${RESET}" >&2
+                        echo -e "${YELLOW}└─────────────────────────────────────────────────────────────────┘${RESET}" >&2
                     fi
                     ;;
                 external)
