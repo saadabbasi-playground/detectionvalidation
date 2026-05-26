@@ -501,7 +501,7 @@ def doctor(fix: bool) -> None:
     import base64 as _b64
     creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode() if os_pass else ""
     _os_reached = False
-    for _scheme in ("http", "https"):
+    for _scheme in ("https", "http"):
         try:
             _ctx = None
             if _scheme == "https":
