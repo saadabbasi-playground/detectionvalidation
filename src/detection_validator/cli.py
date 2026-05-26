@@ -497,26 +497,34 @@ def doctor(fix: bool) -> None:
     else:
         ok("OPENSEARCH_INITIAL_ADMIN_PASSWORD set")
 
-    # OpenSearch
+    # OpenSearch — try HTTP first (security disabled in lab config), fallback to HTTPS
     import base64 as _b64
     creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode() if os_pass else ""
-    try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        req = urllib.request.Request(
-            "https://localhost:9200",
-            headers={"Authorization": f"Basic {creds}"} if creds else {},
-        )
-        with urllib.request.urlopen(req, context=ctx, timeout=4) as resp:
-            ok(f"OpenSearch reachable (HTTP {resp.status})")
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            warn("OpenSearch reachable but auth failed",
-                 "check OPENSEARCH_INITIAL_ADMIN_PASSWORD")
-        else:
-            fail(f"OpenSearch HTTP {exc.code}", "run: ./dv up lab --siem opensearch")
-    except Exception as exc:
+    _os_reached = False
+    for _scheme in ("http", "https"):
+        try:
+            _ctx = None
+            if _scheme == "https":
+                _ctx = ssl.create_default_context()
+                _ctx.check_hostname = False
+                _ctx.verify_mode = ssl.CERT_NONE
+            _req = urllib.request.Request(
+                f"{_scheme}://localhost:9200",
+                headers={"Authorization": f"Basic {creds}"} if creds else {},
+            )
+            with urllib.request.urlopen(_req, context=_ctx, timeout=4) as resp:
+                ok(f"OpenSearch reachable ({_scheme.upper()} {resp.status})")
+                _os_reached = True
+                break
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                warn("OpenSearch reachable but auth failed",
+                     "check OPENSEARCH_INITIAL_ADMIN_PASSWORD")
+                _os_reached = True
+                break
+        except Exception:
+            continue  # try next scheme
+    if not _os_reached:
         fail("OpenSearch not reachable", "run: ./dv up lab --siem opensearch --profile tiny")
 
     # Splunk mock
