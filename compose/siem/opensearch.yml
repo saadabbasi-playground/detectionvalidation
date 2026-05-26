@@ -11,13 +11,12 @@ services:
       OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DetectVal123!}
       OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS:--Xms768m -Xmx768m}
       discovery.type: ${OPENSEARCH_DISCOVERY:-single-node}
-      plugins.security.disabled: "true"
     volumes:
       - opensearch-data:/usr/share/opensearch/data
     ports:
       - "${OPENSEARCH_PORT:-9200}:9200"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf -k https://localhost:9200/_cluster/health -u admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DetectVal123!} || exit 1"]
       interval: 30s
       timeout: 15s
       retries: 5
@@ -33,13 +32,11 @@ services:
     image: opensearchproject/opensearch-dashboards:2.14.0
     container_name: dv-opensearch-dashboards
     restart: unless-stopped
-    entrypoint: ["/bin/bash", "-c"]
-    command: >-
-      echo 'opensearch_security.enabled: false' >>
-      /usr/share/opensearch-dashboards/config/opensearch_dashboards.yml &&
-      exec /usr/share/opensearch-dashboards/opensearch-dashboards-docker-entrypoint.sh opensearch-dashboards
     environment:
-      OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
+      OPENSEARCH_HOSTS: '["https://opensearch:9200"]'
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DetectVal123!}
+      OPENSEARCH_SSL_VERIFICATIONMODE: none
     ports:
       - "${DASHBOARDS_PORT:-5601}:5601"
     depends_on:
