@@ -122,9 +122,23 @@ Expected: `Vagrant 2.x.x`
 
 ---
 
-### 1.6 Install the vagrant-qemu plugin
+### 1.6 Install QEMU and the vagrant-qemu plugin
 
-This lets Vagrant use Apple's native Hypervisor Framework for full-speed ARM64 virtualisation.
+QEMU provides the `qemu-img` tool that vagrant-qemu needs to import VM disk images.
+
+```bash
+brew install qemu
+```
+
+Verify:
+
+```bash
+qemu-img --version
+```
+
+Expected: `qemu-img version 9.x.x` (or similar).
+
+Then install the Vagrant plugin that connects Vagrant to QEMU:
 
 ```bash
 vagrant plugin install vagrant-qemu
