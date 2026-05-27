@@ -115,8 +115,7 @@ The Docker stack runs OpenSearch (the SIEM), a Splunk mock receiver, Vector (the
 export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"
 
 # Start the full lab stack
-# --profile tiny keeps memory usage low (~600 MB per service)
-./dv up lab --siem opensearch --profile tiny
+./dv up lab --siem opensearch --profile standard
 ```
 
 > **Important:** save this password in your shell profile so you don't have to type it every session:
@@ -675,7 +674,7 @@ vagrant ssh -c "tail -f /var/log/audit/audit-events.jsonl"
 
 ```bash
 # Start the lab with OpenSearch (recommended)
-./dv up lab --siem opensearch --profile tiny
+./dv up lab --siem opensearch --profile standard
 
 # Start with Splunk Enterprise (amd64 only — not available on Apple Silicon)
 ./dv up lab --siem splunk --profile standard
@@ -699,8 +698,8 @@ vagrant ssh -c "tail -f /var/log/audit/audit-events.jsonl"
 
 | Profile | RAM per service | Recommended for |
 |---|---|---|
-| `tiny` | ~600 MB | 16 GB MacBook, or any machine where Docker feels sluggish |
-| `standard` | ~1 GB | 32 GB MacBook with plenty of headroom |
+| `standard` | ~1 GB | Default — recommended for most Macs |
+| `tiny` | ~600 MB | Use only if containers keep restarting due to low memory |
 | `full` | 2 GB+ | CI servers or dedicated machines |
 
 ---
@@ -761,17 +760,17 @@ dv siem status    # confirms the password works
 
 ```bash
 docker run --rm --privileged alpine sysctl -w vm.max_map_count=262144
-./dv up lab --siem opensearch --profile tiny
+./dv up lab --siem opensearch --profile standard
 ```
 
 ### Containers restart or run out of memory
 
-In Docker Desktop → Settings → Resources → Memory: set to at least **6 GB**.
+In Docker Desktop → Settings → Resources → Memory: set to at least **8 GB**.
 
-Then use the `tiny` profile:
+If still unstable, fall back to the `tiny` profile:
 
 ```bash
-./dv up lab --siem opensearch --profile tiny
+./dv up lab --siem opensearch --profile standard
 ```
 
 ### Vagrant VM fails to start — QEMU / HVF error

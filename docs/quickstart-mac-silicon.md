@@ -275,10 +275,10 @@ Fix any ✗ (red) errors before continuing. ⚠ (yellow) warnings are fine for n
 ## Part 4 — Start the Docker stack
 
 ```bash
-./dv up lab --siem opensearch --profile tiny
+./dv up lab --siem opensearch --profile standard
 ```
 
-> `--profile tiny` keeps memory usage to ~600 MB per service. Recommended for all 16 GB MacBooks. Use `--profile standard` only if you have 32 GB and Docker Desktop is set to 12+ GB.
+> `--profile standard` allocates ~1 GB per service and is the recommended default. Use `--profile tiny` only if Docker Desktop is short on memory and containers keep restarting.
 
 **First run** builds Docker images from source — takes 3–5 minutes. You will see build output scrolling. Subsequent starts take about 30 seconds.
 
@@ -303,7 +303,7 @@ detectval-splunk               Up 2 minutes (healthy)
 
 If any container shows `(starting)`, wait 30 more seconds and run `docker ps` again.
 
-Confirm OpenSearch is accepting connections:
+**Verify OpenSearch is up and accepting connections:**
 
 ```bash
 dv siem status
@@ -324,11 +324,15 @@ echo $OPENSEARCH_INITIAL_ADMIN_PASSWORD
 
 It must print `DetectVal123!`. If it is empty, run `source ~/.zshrc`.
 
+**Verify OpenSearch Dashboards is reachable:**
+
+Open `https://localhost:5601` in your browser. Accept the self-signed certificate warning. Log in with `admin` / `DetectVal123!`. You should see the OpenSearch home screen.
+
 ---
 
 ## Part 5 — Start the Vagrant VM
 
-The Vagrant VM runs a real Ubuntu 22.04 ARM64 kernel with `auditd`. This generates genuine kernel-level syscall telemetry — the kind that detection rules need to fire against.
+The Vagrant VM runs a real Ubuntu 22.04 ARM64 kernel with `auditd`. This generates genuine kernel-level syscall telemetry — the kind that detection rules need to fire against. It also runs the intentionally vulnerable service that the exploit attacks.
 
 > **Important:** `vagrant` commands only work from inside the `vagrant/` directory. Always `cd vagrant` first.
 
@@ -341,21 +345,22 @@ vagrant up
 
 **Subsequent runs:** takes about 30 seconds.
 
-When provisioning finishes, verify the three services inside the VM are running:
+When provisioning finishes, verify all four services inside the VM are running:
 
 ```bash
-vagrant ssh -c "systemctl is-active victim-agent vector auditd"
+vagrant ssh -c "systemctl is-active victim-agent vulnerable-service vector auditd"
 ```
 
-Expected — three lines each saying `active`:
+Expected — four lines each saying `active`:
 
 ```
 active
 active
 active
+active
 ```
 
-Verify the victim agent is reachable from your Mac:
+**Verify the victim agent is reachable from your Mac:**
 
 ```bash
 curl http://localhost:9098/health
@@ -367,12 +372,38 @@ Expected:
 {"status": "ok", "host": "dv-victim", "mode": "vm"}
 ```
 
-If you get `Connection refused`, wait 10 seconds and try again — the agent may still be starting.
+**Verify the vulnerable service is reachable:**
+
+```bash
+curl http://localhost:8888/health
+```
+
+Expected:
+
+```json
+{"status": "vulnerable"}
+```
+
+If either returns `Connection refused`, wait 10 seconds and try again — services may still be starting.
 
 Go back to the project root:
 
 ```bash
 cd ..
+```
+
+**Verify telemetry is flowing to OpenSearch:**
+
+Wait about 30 seconds after the VM starts, then check that audit events are arriving:
+
+```bash
+dv siem status
+```
+
+The document count for `dv-telemetry-*` should be greater than 0. If it stays at 0 after a minute, check Vector inside the VM:
+
+```bash
+cd vagrant && vagrant ssh -c "systemctl status vector --no-pager" && cd ..
 ```
 
 ---
@@ -430,7 +461,7 @@ Run `dv doctor` one more time to confirm everything is green.
 
 ---
 
-## Part 7 — Simulate attacks
+## Part 7 — Run attacks and watch telemetry
 
 Two modes are available. Use `--mode exploit` for the most realistic telemetry (real kernel-level events), or the default simulate mode for lightweight synthetic events.
 
@@ -438,14 +469,18 @@ Two modes are available. Use `--mode exploit` for the most realistic telemetry (
 
 Sends actual HTTP payloads to the intentionally vulnerable service on port 8888. The service runs `curl`, `id`, and reads `/etc/passwd` — all captured as real auditd syscall events.
 
-First verify the vulnerable service is up:
+**Step 1 — Open a second terminal and watch telemetry arrive in real time:**
 
 ```bash
-curl http://localhost:8888/health
-# Expected: {"status": "vulnerable"}
+cd /path/to/detection-validator/vagrant
+source ~/.zshrc && vagrant ssh
+# Inside the VM:
+sudo tail -f /var/log/audit/audit-events.jsonl
 ```
 
-Then run the exploits:
+Leave this running. Every line that appears is a real kernel event.
+
+**Step 2 — In your original terminal, run the exploits:**
 
 ```bash
 dv attack --cve CVE-2021-44228 --target vagrant --mode exploit
@@ -464,6 +499,23 @@ Expected output for Log4Shell:
 
 ✓ 1 exploit(s) delivered.
 ```
+
+In the second terminal you will see lines appear with `key: network_connect` (the curl call) and `key: shell_exec` (the id command) — those are the real kernel events the exploit triggered.
+
+**Step 3 — Verify events reached OpenSearch:**
+
+```bash
+dv siem status
+```
+
+The `dv-telemetry-*` document count should have increased. You can also query directly:
+
+```bash
+curl -sk -u "admin:DetectVal123!" \
+  "https://localhost:9200/dv-telemetry-*/_count?q=key:network_connect+AND+uid:33"
+```
+
+A count greater than 0 confirms the exploit events (www-data user, uid 33) landed in OpenSearch.
 
 ### Option B — Simulate (synthetic events)
 
@@ -504,6 +556,15 @@ If `--since 1` shows 0 hits for everything, extend the window:
 ```bash
 dv validate examples/detections/sigma/ --since 24
 ```
+
+**Verify the right events are in OpenSearch before validating.** Run these KQL queries in Dashboards Discover (`https://localhost:5601`, index `dv-telemetry-*`) or via curl:
+
+| What to check | KQL query |
+|---|---|
+| Log4Shell exploit fired | `key: network_connect AND exe: *curl* AND uid: 33` |
+| ProxyLogon sensitive file read | `key: sensitive_file AND uid: 0` |
+| Any exploit event | `source: auditd AND (technique: T1190 OR technique: T1552.001)` |
+| All recent auditd events | `source: auditd` (set time to Last 1 hour) |
 
 ---
 
@@ -603,18 +664,26 @@ cd detection-validator
 source .venv/bin/activate
 
 # Start Docker
-./dv up lab --siem opensearch --profile tiny
+./dv up lab --siem opensearch --profile standard
 
 # Start VM
 cd vagrant && vagrant up && cd ..
 
-# Check everything
+# Check everything is healthy
 dv doctor
 
-# Run attack(s)
-dv attack --cve CVE-2021-44228 --target vagrant --agent-port 9098 --watch
+# Verify the vulnerable service is reachable
+curl http://localhost:8888/health
+# Expected: {"status": "vulnerable"}
 
-# Validate and report
+# Run attacks (real exploit mode)
+dv attack --cve CVE-2021-44228 --target vagrant --mode exploit
+dv attack --cve CVE-2021-26855 --target vagrant --mode exploit
+
+# Validate rules
+dv validate examples/detections/sigma/ --since 1
+
+# Generate HTML report
 dv validate examples/detections/sigma/ --since 1 --format json | dv report --format html -o report.html
 open report.html
 ```
@@ -665,10 +734,10 @@ Then restart the stack:
 
 ```bash
 ./dv down lab --siem opensearch
-./dv up lab --siem opensearch --profile tiny
+./dv up lab --siem opensearch --profile standard
 ```
 
-**Out of memory** — increase Docker Desktop memory to 6 GB minimum (Docker Desktop → Settings → Resources → Memory).
+**Out of memory** — increase Docker Desktop memory to at least 8 GB (Docker Desktop → Settings → Resources → Memory), then restart with `--profile standard`.
 
 ---
 
@@ -752,7 +821,7 @@ Fix any ✗ errors it reports.
 |---|---|
 | Activate Python environment | `source .venv/bin/activate` |
 | Check everything works | `dv doctor` |
-| Start Docker stack | `./dv up lab --siem opensearch --profile tiny` |
+| Start Docker stack | `./dv up lab --siem opensearch --profile standard` |
 | Stop Docker stack | `./dv down lab --siem opensearch` |
 | Start Vagrant VM | `cd vagrant && vagrant up && cd ..` |
 | Stop Vagrant VM | `cd vagrant && vagrant halt && cd ..` |
