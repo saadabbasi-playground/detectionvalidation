@@ -432,68 +432,45 @@ Run `dv doctor` one more time to confirm everything is green.
 
 ## Part 7 — Simulate attacks
 
-Now simulate three real CVE exploits against the Vagrant VM. Each command executes attack steps on the VM, then waits 5 seconds for Vector to ship the audit events to OpenSearch before printing a confirmation.
+Two modes are available. Use `--mode exploit` for the most realistic telemetry (real kernel-level events), or the default simulate mode for lightweight synthetic events.
 
-### Log4Shell (CVE-2021-44228) — CVSS 10.0
+### Option A — Real exploit (recommended)
+
+Sends actual HTTP payloads to the intentionally vulnerable service on port 8888. The service runs `curl`, `id`, and reads `/etc/passwd` — all captured as real auditd syscall events.
+
+First verify the vulnerable service is up:
 
 ```bash
-dv attack --cve CVE-2021-44228 --target vagrant --agent-port 9098 --watch
+curl http://localhost:8888/health
+# Expected: {"status": "vulnerable"}
 ```
 
-Expected output:
+Then run the exploits:
+
+```bash
+dv attack --cve CVE-2021-44228 --target vagrant --mode exploit
+dv attack --cve CVE-2021-26855 --target vagrant --mode exploit
+```
+
+Expected output for Log4Shell:
 
 ```
 ⚔  Running attack scenario  cve=CVE-2021-44228  target=vagrant
+  Mode: exploit — sending real HTTP payloads to http://localhost:8888
 
-Scenario: Log4Shell Remote Code Execution
-  CVE: CVE-2021-44228  CVSS: 10.0
+  Log4Shell JNDI injection via X-Api-Version header
+  ✓ T1190 + T1059.004  status=exploited
+    uid=33(www-data) gid=33(www-data) groups=33(www-data)
 
-  ✓ T1190     key=network_connect  rc=0
-  ✓ T1059.004 key=shell_exec       rc=0
-    uid=0(root) gid=0(root) groups=0(root)
-
-✓ 2 steps executed.
-
-Attack events in OpenSearch (last 20):
-  T1190         network_connect   exe=/usr/bin/curl   uid=33
-  T1059.004     shell_exec        exe=/bin/bash       uid=33
+✓ 1 exploit(s) delivered.
 ```
 
----
-
-### PrintNightmare (CVE-2021-34527) — CVSS 8.8
+### Option B — Simulate (synthetic events)
 
 ```bash
+dv attack --cve CVE-2021-44228 --target vagrant --agent-port 9098 --watch
 dv attack --cve CVE-2021-34527 --target vagrant --agent-port 9098 --watch
-```
-
-Expected output:
-
-```
-  ✓ T1068     key=priv_change  rc=0
-  ✓ T1547.012 key=file_write   rc=0
-  ✓ T1574.001 key=file_write   rc=0
-
-✓ 3 steps executed.
-```
-
----
-
-### ProxyLogon (CVE-2021-26855) — CVSS 9.1
-
-```bash
 dv attack --cve CVE-2021-26855 --target vagrant --agent-port 9098 --watch
-```
-
-Expected output:
-
-```
-  ✓ T1190     key=network_connect  rc=0
-  ✓ T1505.003 key=file_write       rc=0
-  ✓ T1078     key=identity_check   rc=0
-  ✓ T1552.001 key=sensitive_file   rc=0
-
-✓ 4 steps executed.
 ```
 
 ---
@@ -507,19 +484,20 @@ dv validate examples/detections/sigma/ --since 1
 This loads every detection rule, queries OpenSearch for matching events from the last hour, and reports PASS or FAIL:
 
 ```
- Rule                            Techniques              Hits  SIEM         Status
- LSASS Memory Dump via TM        T1003.001                  0  opensearch   ✗ FAIL
- Log4Shell JNDI Injection        T1190, T1059.004           6  opensearch   ✓ PASS
- MSHTA Spawning Windows Shell    T1218.005, T1059.001       0  opensearch   ✗ FAIL
- Nmap Port Scan Detected         T1046                      0  opensearch   ✗ FAIL
- PrintNightmare Spooler Abuse    T1068, T1547.012           4  opensearch   ✓ PASS
- ProxyLogon Exchange SSRF        T1190, T1505.003           5  opensearch   ✓ PASS
- Test                            T1499, T1059.004           3  opensearch   ✓ PASS
+ Rule                            Techniques               Hits  SIEM         Status
+ LSASS Memory Dump via TM        T1003.001                   0  opensearch   ✗ FAIL
+ Log4Shell JNDI Injection        T1190, T1059.004          156  opensearch   ✓ PASS
+ Log4Shell RCE - Outbound Conn   T1190, T1059.004            1  opensearch   ✓ PASS
+ MSHTA Spawning Windows Shell    T1218.005, T1059.001       94  opensearch   ✓ PASS
+ Nmap Port Scan Detected         T1046                       0  opensearch   ✗ FAIL
+ PrintNightmare Spooler Abuse    T1068, T1547.012           14  opensearch   ✓ PASS
+ ProxyLogon Exchange SSRF        T1190, T1505.003           62  opensearch   ✓ PASS
+ ProxyLogon - Sensitive File     T1190, T1552.001           32  opensearch   ✓ PASS
 
-Results: 7 rule(s)  4 PASS  3 FAIL  0 ERROR  0 SKIP
+Results: 8 rule(s)  6 PASS  2 FAIL  0 ERROR  0 SKIP
 ```
 
-> **Why do 3 rules fail?** LSASS, MSHTA, and Nmap target Windows-specific processes. The Vagrant VM runs Linux — those events are never generated. This is expected and correct behaviour.
+> **Why do 2 rules fail?** LSASS targets a Windows process — never generated on Linux. Nmap requires an active port scan to be run. Both are expected.
 
 If `--since 1` shows 0 hits for everything, extend the window:
 
@@ -762,6 +740,7 @@ Fix any ✗ errors it reports.
 | `5601` | OpenSearch Dashboards | `https://localhost:5601` |
 | `8000` | Splunk mock UI | `http://localhost:8000` |
 | `8088` | Splunk HEC (ingestion) | `http://localhost:8088` |
+| `8888` | Vulnerable service (VM) | `http://localhost:8888/health` |
 | `9098` | Victim agent — Mac → VM | `http://localhost:9098/health` |
 | `9099` | Victim agent — Docker container | `http://localhost:9099/health` |
 

@@ -202,47 +202,56 @@ cd ..
 
 ---
 
-## Step 4 — Simulate an attack
+## Step 4 — Run an attack
 
-Pick a CVE scenario and simulate the exploit steps against the Vagrant VM:
+Two modes are available. Use `--mode exploit` (real HTTP payloads to the vulnerable service) for the most realistic telemetry, or omit it for a lightweight simulation.
+
+### Mode: exploit (recommended — real kernel events)
+
+Sends actual HTTP exploit payloads to the intentionally vulnerable service running on the VM (port 8888). The service triggers real `curl`, `id`, and `/etc/passwd` reads — captured by auditd as genuine kernel syscall events.
 
 ```bash
-dv attack --cve CVE-2021-44228 --target vagrant --agent-port 9098 --watch
+dv attack --cve CVE-2021-44228 --target vagrant --mode exploit
+dv attack --cve CVE-2021-26855 --target vagrant --mode exploit
 ```
 
-The `--watch` flag waits 5 seconds for Vector to flush the events to OpenSearch, then prints a confirmation. You should see:
+Expected output for Log4Shell:
 
 ```
 ⚔  Running attack scenario  cve=CVE-2021-44228  target=vagrant
+  Mode: exploit — sending real HTTP payloads to http://localhost:8888
 
-Scenario: Log4Shell Remote Code Execution
-  CVE: CVE-2021-44228  CVSS: 10.0
+  Log4Shell JNDI injection via X-Api-Version header
+  ✓ T1190 + T1059.004  status=exploited
+    uid=33(www-data) gid=33(www-data) groups=33(www-data)
 
-  ✓ T1190     key=network_connect  rc=0
-  ✓ T1059.004 key=shell_exec       rc=0
-    uid=0(root) gid=0(root) groups=0(root)
+✓ 1 exploit(s) delivered.
+```
 
-✓ 2 steps executed.
+Verify the vulnerable service is reachable before attacking:
 
-Attack events in OpenSearch (last 20):
-  T1190         network_connect   exe=/usr/bin/curl   uid=33
-  T1059.004     shell_exec        exe=/bin/bash       uid=33
+```bash
+curl http://localhost:8888/health
+# Expected: {"status": "vulnerable"}
+```
+
+### Mode: simulate (lightweight — synthetic events)
+
+Posts hand-crafted audit records directly to the victim agent. No real exploit is executed. Useful when you just need telemetry quickly without caring about realism.
+
+```bash
+dv attack --cve CVE-2021-44228 --target vagrant --agent-port 9098 --watch
+dv attack --cve CVE-2021-34527 --target vagrant --agent-port 9098 --watch
+dv attack --cve CVE-2021-26855 --target vagrant --agent-port 9098 --watch
 ```
 
 ### Available CVE scenarios
 
-| CVE | Vulnerability | ATT&CK techniques simulated |
+| CVE | Vulnerability | ATT&CK techniques |
 |---|---|---|
-| `CVE-2021-44228` | Log4Shell RCE | T1190 (exploitation), T1059.004 (shell execution) |
-| `CVE-2021-34527` | PrintNightmare | T1068 (privilege escalation), T1547.012 (persistence), T1574.001 (hijacking) |
-| `CVE-2021-26855` | ProxyLogon SSRF | T1190 (exploitation), T1505.003 (web shell), T1078 (valid accounts) |
-
-Run multiple scenarios to build up telemetry:
-
-```bash
-dv attack --cve CVE-2021-34527 --target vagrant --agent-port 9098 --watch
-dv attack --cve CVE-2021-26855 --target vagrant --agent-port 9098 --watch
-```
+| `CVE-2021-44228` | Log4Shell RCE | T1190, T1059.004 |
+| `CVE-2021-34527` | PrintNightmare | T1068, T1547.012, T1574.001 |
+| `CVE-2021-26855` | ProxyLogon SSRF | T1190, T1505.003, T1078, T1552.001 |
 
 ---
 
@@ -255,25 +264,27 @@ dv validate examples/detections/sigma/ --since 1
 This loads every Sigma rule in that directory, builds a query for each one, runs it against OpenSearch, and reports PASS or FAIL:
 
 ```
- Rule                            Techniques              Hits  SIEM         Status
- LSASS Memory Dump via TM        T1003.001                  0  opensearch   ✗ FAIL
- Log4Shell JNDI Injection        T1190, T1059.004           6  opensearch   ✓ PASS
- MSHTA Spawning Windows Shell    T1218.005, T1059.001       0  opensearch   ✗ FAIL
- Nmap Port Scan Detected         T1046                      0  opensearch   ✗ FAIL
- PrintNightmare Spooler Abuse    T1068, T1547.012           4  opensearch   ✓ PASS
- ProxyLogon Exchange SSRF        T1190, T1505.003           5  opensearch   ✓ PASS
- Test                            T1499, T1059.004           3  opensearch   ✓ PASS
+ Rule                            Techniques               Hits  SIEM         Status
+ LSASS Memory Dump via TM        T1003.001                   0  opensearch   ✗ FAIL
+ Log4Shell JNDI Injection        T1190, T1059.004          156  opensearch   ✓ PASS
+ Log4Shell RCE - Outbound Conn   T1190, T1059.004            1  opensearch   ✓ PASS
+ MSHTA Spawning Windows Shell    T1218.005, T1059.001       94  opensearch   ✓ PASS
+ Nmap Port Scan Detected         T1046                       0  opensearch   ✗ FAIL
+ PrintNightmare Spooler Abuse    T1068, T1547.012           14  opensearch   ✓ PASS
+ ProxyLogon Exchange SSRF        T1190, T1505.003           62  opensearch   ✓ PASS
+ ProxyLogon - Sensitive File     T1190, T1552.001           32  opensearch   ✓ PASS
 
-Results: 7 rule(s)  4 PASS  3 FAIL  0 ERROR  0 SKIP  (1.3s)
+Results: 8 rule(s)  6 PASS  2 FAIL  0 ERROR  0 SKIP
 ```
 
-> **Why do LSASS, MSHTA, and Nmap fail?** Those rules target Windows processes (lsass.exe, mshta.exe) or require an active port scan. The Vagrant VM runs Linux, so those events are never generated. This is expected — the rules are correct, there is simply no matching telemetry.
+> **Why do LSASS and Nmap fail?** LSASS targets a Windows process — the Vagrant VM runs Linux, so that event is never generated. Nmap requires an active port scan to be run. Both are expected failures.
 
 ### How a rule passes
 
-A rule **PASSES** if OpenSearch returns at least one event matching:
-- The ATT&CK technique IDs in the rule's tags (e.g. `attack.T1190`), matched against the `technique` field, **or**
-- Keywords from the rule's `detection` block, matched against `proctitle`, `cmd_output`, and `message` fields.
+The validator uses a three-layer strategy:
+1. **Sigma field-level translation** — translates the `detection:` block to an OpenSearch query and runs it. Most precise.
+2. **Technique ID match** — matches the `technique` field against ATT&CK IDs in the rule's tags.
+3. **Keyword match** — free-text search across `proctitle`, `cmd_output`, and `message`.
 
 ### Time window
 
@@ -805,12 +816,16 @@ Ready-to-use rules in `examples/detections/`:
 | Format | File | CVE | Techniques |
 |---|---|---|---|
 | Sigma | `sigma/log4shell_jndi_injection.yml` | CVE-2021-44228 | T1190, T1059.004 |
+| Sigma | `sigma/log4shell_process_exec.yml` | CVE-2021-44228 | T1190, T1059.004 |
 | Sigma | `sigma/printnightmare_spooler_abuse.yml` | CVE-2021-34527 | T1068, T1547.012, T1574.001 |
 | Sigma | `sigma/proxylogon_exchange_ssrf.yml` | CVE-2021-26855 | T1190, T1505.003, T1078 |
+| Sigma | `sigma/proxylogon_process_exec.yml` | CVE-2021-26855 | T1190, T1552.001, T1078 |
 | Sigma | `sigma/credential_dump_lsass.yml` | — | T1003.001 |
 | Sigma | `sigma/network_scan_nmap.yml` | — | T1046 |
 | Splunk | `splunk/savedsearches.conf` | — | T1059.001, T1570 |
 | KQL | `kql/sentinel_aad_password_spray.yml` | — | T1110.003 |
+
+> `log4shell_process_exec.yml` and `proxylogon_process_exec.yml` are **field-based** rules that match real kernel-level auditd observables (`key`, `exe`, `uid`) rather than technique IDs. They fire only when the real exploit mode is used.
 
 ---
 
