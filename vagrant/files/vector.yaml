@@ -1,0 +1,74 @@
+# Vector config for the dv-victim Vagrant VM.
+# Reads audit events from the JSONL file written by victim-agent.py,
+# ships to Mac host OpenSearch and Splunk at 10.0.2.2 (QEMU user-net gateway).
+#
+# NOTE: "change-me" is substituted with OPENSEARCH_INITIAL_ADMIN_PASSWORD
+# during `vagrant provision` — do not replace it here.
+
+api:
+  enabled: true
+  address: "0.0.0.0:8686"
+
+sources:
+  audit_events:
+    type: file
+    include:
+      - /var/log/audit/audit-events.jsonl
+    read_from: end
+    line_delimiter: "\n"
+
+transforms:
+  parse_events:
+    type: remap
+    inputs:
+      - audit_events
+    source: |
+      parsed, err = parse_json(.message)
+      if err == null {
+        ., _ = merge(., parsed)
+      }
+      del(.message)
+      del(.file)
+      del(.source_type)
+      if is_string(.timestamp) {
+        ts, err = parse_timestamp(.timestamp, format: "%+")
+        if err == null { .timestamp = ts }
+      }
+
+sinks:
+  opensearch_out:
+    type: elasticsearch
+    inputs:
+      - parse_events
+    endpoints:
+      - https://10.0.2.2:9200
+    mode: bulk
+    suppress_type_name: true
+    api_version: v8
+    auth:
+      strategy: basic
+      user: admin
+      # Substituted at provision time from OPENSEARCH_INITIAL_ADMIN_PASSWORD
+      password: "change-me"
+    bulk:
+      index: "dv-telemetry-%Y.%m.%d"
+    tls:
+      verify_certificate: false
+      verify_hostname: false
+    request:
+      timeout_secs: 30
+
+  splunk_hec:
+    type: splunk_hec_logs
+    inputs:
+      - parse_events
+    endpoint: http://10.0.2.2:8088
+    # Must match SPLUNK_HEC_TOKEN set in the Splunk mock container
+    token: "change-me"
+    index: detection_validator
+    encoding:
+      codec: json
+    acknowledgements:
+      enabled: false
+    healthcheck:
+      enabled: false
