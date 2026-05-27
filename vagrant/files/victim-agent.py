@@ -49,6 +49,33 @@ _SYSCALL_NAMES = {
     "221": "execve", "26": "ptrace",
 }
 
+# Maps auditd rule keys (set via -k in audit.rules) to MITRE ATT&CK technique IDs.
+# Enables the validator to match raw kernel events against Sigma rule technique tags.
+_KEY_TO_TECHNIQUE: dict[str, str] = {
+    "exec":              "T1059",
+    "shell_exec":        "T1059.004",
+    "interpreter_exec":  "T1059.006",
+    "network_connect":   "T1190",
+    "network_accept":    "T1190",
+    "priv_change":       "T1068",
+    "file_permission":   "T1222",
+    "sudo_exec":         "T1548.003",
+    "su_exec":           "T1548.003",
+    "module_load":       "T1547.006",
+    "cron_modify":       "T1053.003",
+    "startup_modify":    "T1547.001",
+    "sensitive_file":    "T1552.001",
+    "ssh_config":        "T1098.004",
+    "ssh_key":           "T1552.004",
+    "file_delete":       "T1070.004",
+    "log_modify":        "T1070.002",
+    "network_discovery": "T1049",
+    "network_scan":      "T1046",
+    "system_info":       "T1082",
+    "identity_check":    "T1033",
+    "os_info":           "T1082",
+}
+
 
 def _parse_audit_line(line: str) -> dict[str, Any] | None:
     line = line.strip()
@@ -79,7 +106,7 @@ def _parse_audit_line(line: str) -> dict[str, Any] | None:
                     pass
     if "syscall" in fields:
         fields["syscall_name"] = _SYSCALL_NAMES.get(fields["syscall"], fields["syscall"])
-    return {
+    event: dict[str, Any] = {
         "source": "auditd",
         "host": _HOST,
         "vm": "dv-victim",
@@ -88,6 +115,10 @@ def _parse_audit_line(line: str) -> dict[str, Any] | None:
         "type": event_type,
         **fields,
     }
+    audit_key = fields.get("key", "")
+    if audit_key and audit_key in _KEY_TO_TECHNIQUE:
+        event["technique"] = _KEY_TO_TECHNIQUE[audit_key]
+    return event
 
 
 # ── Synthetic background events (fallback) ────────────────────────────────
