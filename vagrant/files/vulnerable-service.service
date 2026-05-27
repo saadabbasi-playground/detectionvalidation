@@ -1,0 +1,13 @@
+[Unit]
+Description=DetectionValidator Vulnerable Service (CVE-2021-44228 / CVE-2021-26855)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/vulnerable-service.py
+Restart=always
+User=www-data
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

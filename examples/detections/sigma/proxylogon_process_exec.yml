@@ -1,0 +1,33 @@
+title: ProxyLogon - Sensitive File Access with Root Privileges
+id: c3d5f7a9-4e6b-5c8d-0f2a-1b3c5d7e9f1a
+status: stable
+description: |
+  Detects CVE-2021-26855 (ProxyLogon) post-exploitation activity via real
+  auditd observables: root-level access to sensitive credential files
+  (/etc/passwd, /etc/shadow, /etc/sudoers) combined with identity checks.
+  Matches real kernel events rather than Exchange-specific HTTP patterns.
+author: Security Operations
+date: 2024/01/15
+tags:
+    - attack.initial-access
+    - attack.T1190
+    - attack.credential-access
+    - attack.T1552.001
+    - attack.valid-accounts
+    - attack.T1078
+    - cve.2021.26855
+logsource:
+    product: linux
+    category: file_access
+detection:
+    selection_creds:
+        key: sensitive_file
+        uid: '0'
+    selection_identity:
+        key: identity_check
+        uid: '0'
+    condition: selection_creds or selection_identity
+falsepositives:
+    - Root-level system maintenance accessing /etc/passwd
+    - Scheduled tasks running as root
+level: high

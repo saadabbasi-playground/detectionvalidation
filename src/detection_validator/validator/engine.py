@@ -1,14 +1,16 @@
 """
 Validation engine — executes detection rules against live SIEM telemetry.
 
-Strategy (two-layer):
-  1. Technique matching  — queries for events with technique IDs declared in
-                           the rule's ATT&CK tags (reliable for auditd-agent events).
-  2. Keyword matching    — extracts literal keywords from the rule's detection
-                           section and multi-matches them across free-text fields
-                           (catches real auditd proctitle/cmd_output events).
+Strategy (three-layer, tried in order):
+  1. Sigma field matching — translates the Sigma detection: block into a
+                            proper OpenSearch field-level query so the actual
+                            detection logic is evaluated against real auditd fields.
+  2. Technique matching   — queries for events with technique IDs declared in
+                            the rule's ATT&CK tags (reliable for auditd-agent events).
+  3. Keyword matching     — extracts literal keywords from the rule's detection
+                            section and multi-matches them across free-text fields.
 
-A rule PASSES if either layer returns at least one hit in the time window.
+A rule PASSES if any layer returns at least one hit in the time window.
 """
 from __future__ import annotations
 
@@ -74,6 +76,170 @@ def _sigma_techniques(raw_yaml: str) -> list[str]:
 def _strip_wildcards(kw: str) -> str:
     """Remove leading/trailing Sigma wildcards and strip whitespace."""
     return kw.strip("*?|").strip()
+
+
+# ── Sigma detection block → OpenSearch translator ────────────────────────────
+
+def _sigma_field_clause(field_raw: str, value: Any) -> dict | None:
+    """
+    Translate a single Sigma field condition to an OpenSearch clause.
+
+    Supported modifiers (appended to field name with |):
+      contains   → wildcard *value*
+      endswith   → wildcard *value
+      startswith → wildcard value*
+      re         → regexp
+      (none)     → term / terms exact match
+    """
+    parts = field_raw.split("|", 1)
+    field = parts[0].strip()
+    modifier = parts[1].lower() if len(parts) > 1 else ""
+
+    # keyword sub-field for exact/wildcard matching on text fields
+    kf = f"{field}.keyword"
+
+    values = value if isinstance(value, list) else [value]
+
+    clauses: list[dict] = []
+    for v in values:
+        sv = str(v)
+        if modifier == "contains":
+            clauses.append({"wildcard": {kf: f"*{sv}*"}})
+        elif modifier == "endswith":
+            clauses.append({"wildcard": {kf: f"*{sv}"}})
+        elif modifier == "startswith":
+            clauses.append({"wildcard": {kf: f"{sv}*"}})
+        elif modifier == "re":
+            clauses.append({"regexp": {kf: sv}})
+        else:
+            clauses.append({"term": {kf: sv}})
+
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"bool": {"should": clauses, "minimum_should_match": 1}}
+
+
+def _sigma_group_to_clause(group: dict) -> dict | None:
+    """Translate a Sigma named condition group (dict of field conditions) to a bool must clause."""
+    must: list[dict] = []
+    for field_raw, value in group.items():
+        clause = _sigma_field_clause(field_raw, value)
+        if clause:
+            must.append(clause)
+    if not must:
+        return None
+    if len(must) == 1:
+        return must[0]
+    return {"bool": {"must": must}}
+
+
+def _sigma_detection_to_os_query(raw_yaml: str) -> dict | None:
+    """
+    Translate a Sigma rule's detection: block into an OpenSearch bool query.
+
+    Supports condition patterns:
+      - selection
+      - selection and not filter
+      - sel1 or sel2
+      - 1 of selection*  (any group whose name starts with selection)
+    Returns None if the detection block cannot be translated.
+    """
+    try:
+        import yaml
+        data = yaml.safe_load(raw_yaml)
+    except Exception:
+        return None
+
+    detection = data.get("detection", {})
+    if not detection:
+        return None
+
+    condition_raw: str = str(detection.get("condition", "")).strip()
+    if not condition_raw:
+        return None
+
+    # Build a dict of named groups (exclude 'condition' and 'keywords' keys)
+    groups: dict[str, dict] = {}
+    for name, val in detection.items():
+        if name in ("condition", "keywords") or not isinstance(val, dict):
+            continue
+        groups[name] = val
+
+    if not groups:
+        return None
+
+    def resolve(name: str) -> dict | None:
+        """Resolve a group name or wildcard pattern to an OpenSearch clause."""
+        if "*" in name:
+            # e.g. "selection*" — OR of all matching groups
+            prefix = name.replace("*", "")
+            matched = [_sigma_group_to_clause(g) for n, g in groups.items() if n.startswith(prefix)]
+            matched = [c for c in matched if c]
+            if not matched:
+                return None
+            if len(matched) == 1:
+                return matched[0]
+            return {"bool": {"should": matched, "minimum_should_match": 1}}
+        clause = groups.get(name)
+        return _sigma_group_to_clause(clause) if clause else None
+
+    def parse_condition(cond: str) -> dict | None:
+        """
+        Parse common Sigma condition expressions into an OpenSearch bool query.
+        Handles: term, not term, a and b, a and not b, a or b,
+                 1 of name*, all of name*.
+        """
+        cond = cond.strip()
+
+        # "1 of name*"
+        m = re.match(r"^1\s+of\s+(\S+)$", cond, re.I)
+        if m:
+            return resolve(m.group(1))
+
+        # "all of name*"
+        m = re.match(r"^all\s+of\s+(\S+)$", cond, re.I)
+        if m:
+            prefix = m.group(1).replace("*", "")
+            matched = [_sigma_group_to_clause(g) for n, g in groups.items() if n.startswith(prefix)]
+            matched = [c for c in matched if c]
+            if not matched:
+                return None
+            return {"bool": {"must": matched}}
+
+        # Split on " or " (lowest precedence)
+        or_parts = re.split(r"\bor\b", cond, flags=re.I)
+        if len(or_parts) > 1:
+            clauses = [c for p in or_parts if (c := parse_condition(p.strip()))]
+            if not clauses:
+                return None
+            if len(clauses) == 1:
+                return clauses[0]
+            return {"bool": {"should": clauses, "minimum_should_match": 1}}
+
+        # Split on " and " — each part may be "not X"
+        and_parts = re.split(r"\band\b", cond, flags=re.I)
+        must: list[dict] = []
+        must_not: list[dict] = []
+        for part in and_parts:
+            part = part.strip()
+            negated = re.match(r"^not\s+(.+)$", part, re.I)
+            name = negated.group(1).strip() if negated else part
+            clause = resolve(name)
+            if clause:
+                (must_not if negated else must).append(clause)
+
+        if not must and not must_not:
+            return None
+        result: dict[str, Any] = {"bool": {}}
+        if must:
+            result["bool"]["must"] = must if len(must) > 1 else must[0]
+        if must_not:
+            result["bool"]["must_not"] = must_not if len(must_not) > 1 else must_not[0]
+        return result
+
+    return parse_condition(condition_raw)
 
 
 # ── OpenSearch query builder ──────────────────────────────────────────────────
@@ -175,12 +341,26 @@ class OpenSearchValidator:
         with urllib.request.urlopen(req, context=self._ctx, timeout=15) as resp:
             return json.loads(resp.read())
 
+    def _search(self, query: dict) -> tuple[int, list[dict]]:
+        resp = self._request(f"/{self._index}/_search", query)
+        total_obj = resp.get("hits", {}).get("total", 0)
+        total = total_obj.get("value", 0) if isinstance(total_obj, dict) else int(total_obj)
+        samples = [h.get("_source", {}) for h in resp.get("hits", {}).get("hits", [])[:3]]
+        return total, samples
+
+    def _add_time_filter(self, query: dict) -> dict:
+        if self._since_iso:
+            query["query"]["bool"].setdefault("filter", []).append(
+                {"range": {"timestamp": {"gte": self._since_iso}}}
+            )
+        return query
+
     def validate(self, detection: Any) -> RuleResult:
         from detection_validator.normalizer.schema import ValidationStatus
 
-        # Collect techniques: prefer pre-parsed mitre_techniques, fall back to Sigma tags
         techniques = [t.full_id for t in (detection.mitre_techniques or [])]
         keywords: list[str] = []
+        raw = ""
 
         if detection.detection_logic and detection.detection_logic.raw:
             raw = detection.detection_logic.raw
@@ -188,19 +368,55 @@ class OpenSearchValidator:
                 techniques = _sigma_techniques(raw)
             keywords = _sigma_keywords(raw)
 
+        # ── Layer 1: Sigma field-level translation ────────────────────────────
+        # Translate the detection: block to a proper field-level OpenSearch query.
+        # This is the most precise layer — it evaluates the actual Sigma logic.
+        sigma_clause = _sigma_detection_to_os_query(raw) if raw else None
+        if sigma_clause:
+            size = 5
+            sigma_query: dict[str, Any] = {
+                "size": size,
+                "_source": ["timestamp", "technique", "key", "source",
+                            "exe", "comm", "uid", "proctitle", "cmd_output", "vm"],
+                "query": {"bool": {"must": sigma_clause}},
+                "sort": [{"timestamp": {"order": "desc"}}],
+            }
+            if self._since_iso:
+                sigma_query["query"]["bool"]["filter"] = [
+                    {"range": {"timestamp": {"gte": self._since_iso}}}
+                ]
+            try:
+                total, samples = self._search(sigma_query)
+                if total > 0:
+                    detection.validation_status = ValidationStatus.PASSED
+                    detection.last_validated = datetime.now(tz=timezone.utc)
+                    return RuleResult(
+                        rule_id=str(detection.id),
+                        name=detection.name,
+                        techniques=techniques,
+                        siem="opensearch",
+                        query_desc=f"sigma-fields  techniques=[{', '.join(techniques)}]"
+                                   + (f"  since={self._since_iso[:16]}" if self._since_iso else ""),
+                        hit_count=total,
+                        sample_events=samples,
+                        status="pass",
+                    )
+            except Exception:
+                pass  # fall through to technique/keyword layers
+
+        # ── Layer 2 & 3: technique ID + keyword fallback ──────────────────────
         query = _build_os_query(techniques, keywords, self._since_iso)
         if not query:
-            result = RuleResult(
+            return RuleResult(
                 rule_id=str(detection.id),
                 name=detection.name,
                 techniques=techniques,
                 siem="opensearch",
-                query_desc="(no techniques or keywords found)",
+                query_desc="(no techniques, keywords, or translatable detection block)",
                 hit_count=0,
                 status="skip",
                 error="Rule has no technique IDs or keywords to match against",
             )
-            return result
 
         query_desc = (
             f"techniques=[{', '.join(techniques)}]"
@@ -209,16 +425,10 @@ class OpenSearchValidator:
         )
 
         try:
-            resp = self._request(f"/{self._index}/_search", query)
-            total_obj = resp.get("hits", {}).get("total", 0)
-            total = total_obj.get("value", 0) if isinstance(total_obj, dict) else int(total_obj)
-            samples = [h.get("_source", {}) for h in resp.get("hits", {}).get("hits", [])[:3]]
+            total, samples = self._search(query)
             passed = total > 0
-
-            # Persist validation status back onto the detection object
             detection.validation_status = ValidationStatus.PASSED if passed else ValidationStatus.FAILED
             detection.last_validated = datetime.now(tz=timezone.utc)
-
             return RuleResult(
                 rule_id=str(detection.id),
                 name=detection.name,

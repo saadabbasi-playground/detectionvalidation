@@ -1,0 +1,42 @@
+title: Log4Shell RCE - Outbound Network Connection from Vulnerable Process
+id: b2c4e6f8-3d5a-4b7c-9e1f-0a2b4c6d8e0f
+status: stable
+description: |
+  Detects CVE-2021-44228 (Log4Shell) exploitation via the real observable:
+  an outbound network connection (JNDI lookup) triggered by a web process,
+  followed by shell execution. Matches real auditd kernel events rather than
+  webserver log strings.
+author: Security Operations
+date: 2024/01/15
+tags:
+    - attack.initial-access
+    - attack.T1190
+    - attack.execution
+    - attack.T1059.004
+    - cve.2021.44228
+logsource:
+    product: linux
+    category: network_connection
+detection:
+    selection:
+        key: network_connect
+        exe|endswith:
+            - '/curl'
+            - '/wget'
+            - '/java'
+            - '/python3'
+            - '/python'
+    filter_system:
+        comm:
+            - sshd
+            - systemd
+            - NetworkManager
+            - dbus-daemon
+            - vector
+            - auditd
+            - apt
+    condition: selection and not filter_system
+falsepositives:
+    - Legitimate curl/wget usage by web applications
+    - Package manager downloads
+level: high

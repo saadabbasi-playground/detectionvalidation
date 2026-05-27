@@ -72,3 +72,9 @@ sinks:
       enabled: false
     healthcheck:
       enabled: false
+    # Prevent a stuck Splunk sink from applying backpressure to the OpenSearch sink.
+    # drop_newest discards new events for Splunk when unreachable; OpenSearch is unaffected.
+    buffer:
+      type: memory
+      max_events: 1000
+      when_full: drop_newest
