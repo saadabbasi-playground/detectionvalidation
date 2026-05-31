@@ -4,6 +4,25 @@ This guide takes you from a blank Mac to a running attack simulation, step by st
 
 ---
 
+## Fast path — if you just want it running
+
+If you already have Docker Desktop, Vagrant, vagrant-qemu, QEMU, and Python 3.12 on your machine, this is all you need:
+
+```bash
+git clone https://github.com/saadabbasi-playground/detectionvalidation.git detection-validator
+cd detection-validator
+uv venv && uv pip install -e ".[dev]"
+source .venv/bin/activate
+echo 'export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"' >> ~/.zshrc && source ~/.zshrc
+dv demo
+```
+
+`dv demo` starts the Docker stack, boots the Vagrant VM, fires a Log4Shell exploit, and validates 9 Sigma rules — all automatically. Expected result: **7 PASS / 2 FAIL**.
+
+If you are starting from scratch (no Docker, no Vagrant), follow the full step-by-step guide below.
+
+---
+
 ## What you will end up with
 
 - OpenSearch running in Docker (your SIEM — stores attack telemetry)
@@ -290,15 +309,14 @@ docker ps --format "table {{.Names}}\t{{.Status}}"
 
 Wait for every container to say `(healthy)`. It can take up to 90 seconds after start for OpenSearch to become healthy.
 
-Expected:
+Expected (`standard` profile — dashboards are opt-in via `--profile standard --profile dashboards`):
 
 ```
-NAMES                          STATUS
-dv-linux-victim                Up 2 minutes (healthy)
-dv-vector                      Up 2 minutes (healthy)
-dv-opensearch                  Up 2 minutes (healthy)
-dv-opensearch-dashboards       Up 2 minutes (healthy)
-detectval-splunk               Up 2 minutes (healthy)
+NAMES              STATUS
+dv-linux-victim    Up 2 minutes (healthy)
+dv-vector          Up 2 minutes (healthy)
+dv-opensearch      Up 2 minutes (healthy)
+dv-redis           Up 2 minutes (healthy)
 ```
 
 If any container shows `(starting)`, wait 30 more seconds and run `docker ps` again.
@@ -375,7 +393,7 @@ Expected:
 **Verify the vulnerable service is reachable:**
 
 ```bash
-curl http://localhost:8888/health
+curl http://localhost:9088/health
 ```
 
 Expected:
@@ -385,6 +403,8 @@ Expected:
 ```
 
 If either returns `Connection refused`, wait 10 seconds and try again — services may still be starting.
+
+> **Port note:** the vulnerable service runs on port 8888 _inside_ the VM. Vagrant forwards it to port 9088 on your Mac. Always use `localhost:9088` from your Mac.
 
 Go back to the project root:
 
@@ -437,8 +457,8 @@ dv doctor — environment pre-flight check
   ✓ Vagrant plugin vagrant-qemu
   ✓ Vagrant VM running
   ✓ OPENSEARCH_INITIAL_ADMIN_PASSWORD set
-  ✓ OpenSearch reachable (HTTP 200)
-  ✓ Splunk mock reachable (HTTP 200)
+  ✓ OpenSearch reachable (HTTPS 200)
+  ⚠ Splunk mock not reachable  run: ./dv up lab --siem splunk
   ✓ Victim agent reachable on port 9098 (Vagrant)
   ✓ ATT&CK KB: 858 techniques
   ⚠ KEV cache empty
@@ -467,7 +487,7 @@ Two modes are available. Use `--mode exploit` for the most realistic telemetry (
 
 ### Option A — Real exploit (recommended)
 
-Sends actual HTTP payloads to the intentionally vulnerable service on port 8888. The service runs `curl`, `id`, and reads `/etc/passwd` — all captured as real auditd syscall events.
+Sends actual HTTP payloads to the intentionally vulnerable service (Mac port `9088` → VM port `8888`). The service runs `curl`, `id`, and reads `/etc/passwd` — all captured as real auditd syscall events.
 
 **Step 1 — Open a second terminal and watch telemetry arrive in real time:**
 
@@ -491,7 +511,7 @@ Expected output for Log4Shell:
 
 ```
 ⚔  Running attack scenario  cve=CVE-2021-44228  target=vagrant
-  Mode: exploit — sending real HTTP payloads to http://localhost:8888
+  Mode: exploit — sending real HTTP payloads to http://localhost:9088
 
   Log4Shell JNDI injection via X-Api-Version header
   ✓ T1190 + T1059.004  status=exploited
@@ -672,8 +692,8 @@ cd vagrant && vagrant up && cd ..
 # Check everything is healthy
 dv doctor
 
-# Verify the vulnerable service is reachable
-curl http://localhost:8888/health
+# Verify the vulnerable service is reachable (Mac port 9088 → VM port 8888)
+curl http://localhost:9088/health
 # Expected: {"status": "vulnerable"}
 
 # Run attacks (real exploit mode)
@@ -809,7 +829,7 @@ Fix any ✗ errors it reports.
 | `5601` | OpenSearch Dashboards | `https://localhost:5601` |
 | `8000` | Splunk mock UI | `http://localhost:8000` |
 | `8088` | Splunk HEC (ingestion) | `http://localhost:8088` |
-| `8888` | Vulnerable service (VM) | `http://localhost:8888/health` |
+| `9088` | Vulnerable service (Mac → VM:8888) | `http://localhost:9088/health` |
 | `9098` | Victim agent — Mac → VM | `http://localhost:9098/health` |
 | `9099` | Victim agent — Docker container | `http://localhost:9099/health` |
 

@@ -1,9 +1,9 @@
 # detection-validator
 
-Simulate real CVE-based attacks against a Linux victim, capture genuine kernel-level audit events, and test whether your detection rules actually fire — all on a single MacBook.
+Simulate real CVE-based attacks against a Linux victim, capture genuine kernel-level audit events, and test whether your detection rules actually fire — all on a single MacBook with Apple Silicon.
 
 ```
-Vagrant VM (Ubuntu 22.04)          Mac host
+Vagrant VM (Ubuntu 22.04 ARM64)    Mac host
 ┌─────────────────────────┐        ┌──────────────────────────────────────┐
 │  auditd                 │        │  Docker                              │
 │  victim-agent           │──────▶ │  OpenSearch  (localhost:9200)        │
@@ -13,6 +13,26 @@ Vagrant VM (Ubuntu 22.04)          Mac host
          │ dv attack                              │ dv validate
          └─ simulate CVE exploit steps            └─ query for rule hits
 ```
+
+> **Apple Silicon (M1/M2/M3/M4):** fully supported. The Vagrant VM runs natively via QEMU with Apple Hypervisor Framework. No emulation, no Rosetta.
+
+---
+
+## Quickest start — one command
+
+If you already have Docker Desktop, Vagrant, vagrant-qemu, and Python 3.12 installed:
+
+```bash
+git clone https://github.com/saadabbasi-playground/detectionvalidation.git detection-validator
+cd detection-validator
+uv venv && uv pip install -e ".[dev]"
+source .venv/bin/activate
+
+export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"
+dv demo
+```
+
+`dv demo` starts the Docker stack, boots the VM, runs the canary check, fires a Log4Shell exploit, waits for telemetry, and validates 9 Sigma rules — all in one go. Expected result: **7 PASS / 2 FAIL** (LSASS and Nmap are intentionally excluded from this scenario).
 
 ---
 
@@ -41,8 +61,6 @@ You need these installed before anything will work.
 | Vagrant | any | `brew install vagrant` |
 | vagrant-qemu plugin | any | `vagrant plugin install vagrant-qemu` |
 
-> **Apple Silicon (M1/M2/M3/M4):** fully supported. The Vagrant VM runs natively via QEMU with Apple Hypervisor Framework — there is no emulation overhead.
-
 ---
 
 ## Installation
@@ -51,7 +69,7 @@ Run these commands once, in order:
 
 ```bash
 # 1. Clone the repository
-git clone <repo-url> detection-validator
+git clone https://github.com/saadabbasi-playground/detectionvalidation.git detection-validator
 cd detection-validator
 
 # 2. Create a Python virtual environment and install the tool
@@ -111,19 +129,15 @@ All checks passed.
 The Docker stack runs OpenSearch (the SIEM), a Splunk mock receiver, Vector (the log shipper), and a Linux victim container.
 
 ```bash
-# Set the OpenSearch admin password — pick any strong password you like
-export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"
+# Save the OpenSearch admin password permanently (run once)
+echo 'export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"' >> ~/.zshrc
+source ~/.zshrc
 
-# Start the full lab stack
+# Start the lab stack
 ./dv up lab --siem opensearch --profile standard
 ```
 
-> **Important:** save this password in your shell profile so you don't have to type it every session:
-> ```bash
-> echo 'export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"' >> ~/.zshrc
-> source ~/.zshrc
-> ```
-> Every `dv validate`, `dv siem status`, and `dv deploy` command reads this environment variable.
+> **Note:** `DetectVal123!` is the default password for the local development environment only. It is not used for any external service. Every `dv validate`, `dv siem status`, and `dv deploy` command reads `OPENSEARCH_INITIAL_ADMIN_PASSWORD` from your environment.
 
 Wait about 60 seconds for containers to become healthy, then check:
 
@@ -131,15 +145,14 @@ Wait about 60 seconds for containers to become healthy, then check:
 docker ps --format "table {{.Names}}\t{{.Status}}"
 ```
 
-Expected output:
+Expected output (`standard` profile, no dashboards):
 
 ```
-NAMES                          STATUS
-dv-linux-victim                Up 2 minutes (healthy)
-dv-vector                      Up 2 minutes (healthy)
-dv-opensearch                  Up 2 minutes (healthy)
-dv-opensearch-dashboards       Up 2 minutes (healthy)
-detectval-splunk               Up 2 minutes (healthy)
+NAMES              STATUS
+dv-linux-victim    Up 2 minutes (healthy)
+dv-vector          Up 2 minutes (healthy)
+dv-opensearch      Up 2 minutes (healthy)
+dv-redis           Up 2 minutes (healthy)
 ```
 
 Every container should say `(healthy)`. If one says `(starting)`, wait another 30 seconds and check again.
@@ -155,7 +168,6 @@ Expected:
 ```
 ✓ OpenSearch 2.14.0  at https://localhost:9200
   dv-telemetry-*: 0 documents
-  .opendistro-alerting-alert*: 0 documents
 ```
 
 ---
@@ -207,7 +219,7 @@ Two modes are available. Use `--mode exploit` (real HTTP payloads to the vulnera
 
 ### Mode: exploit (recommended — real kernel events)
 
-Sends actual HTTP exploit payloads to the intentionally vulnerable service running on the VM (port 8888). The service triggers real `curl`, `id`, and `/etc/passwd` reads — captured by auditd as genuine kernel syscall events.
+Sends actual HTTP exploit payloads to the intentionally vulnerable service running on the VM. The service triggers real `curl`, `id`, and `/etc/passwd` reads — captured by auditd as genuine kernel syscall events.
 
 ```bash
 dv attack --cve CVE-2021-44228 --target vagrant --mode exploit
@@ -218,7 +230,7 @@ Expected output for Log4Shell:
 
 ```
 ⚔  Running attack scenario  cve=CVE-2021-44228  target=vagrant
-  Mode: exploit — sending real HTTP payloads to http://localhost:8888
+  Mode: exploit — sending real HTTP payloads to http://localhost:9088
 
   Log4Shell JNDI injection via X-Api-Version header
   ✓ T1190 + T1059.004  status=exploited
@@ -230,7 +242,7 @@ Expected output for Log4Shell:
 Verify the vulnerable service is reachable before attacking:
 
 ```bash
-curl http://localhost:8888/health
+curl http://localhost:9088/health
 # Expected: {"status": "vulnerable"}
 ```
 
@@ -767,10 +779,11 @@ docker run --rm --privileged alpine sysctl -w vm.max_map_count=262144
 
 In Docker Desktop → Settings → Resources → Memory: set to at least **8 GB**.
 
-If still unstable, fall back to the `tiny` profile:
+If still unstable, use the `tiny` profile (skips OpenSearch Dashboards, uses less RAM):
 
 ```bash
-./dv up lab --siem opensearch --profile standard
+./dv down lab --siem opensearch
+./dv up lab --siem opensearch --profile tiny
 ```
 
 ### Vagrant VM fails to start — QEMU / HVF error
@@ -832,6 +845,7 @@ Ready-to-use rules in `examples/detections/`:
 
 | Command | What it does |
 |---|---|
+| `dv demo` | One-command end-to-end demo: stack → VM → canary → exploit → validate |
 | `dv doctor` | Pre-flight check: Python, Docker, Vagrant, SIEMs, agent, caches |
 | `dv doctor --fix` | Same, plus auto-download empty intelligence caches |
 | `dv attack` | Execute CVE exploit steps against the victim VM |
@@ -904,7 +918,7 @@ Ready-to-use rules in `examples/detections/`:
 
 ## Apple Silicon notes
 
-All core services run natively on ARM64.
+All core services run natively on ARM64. There is no emulation overhead.
 
 | Component | ARM64 status |
 |---|---|
@@ -913,6 +927,17 @@ All core services run natively on ARM64.
 | Vagrant VM via QEMU/HVF | ✅ native ARM64 kernel |
 | Docker Linux victim | ✅ native |
 | Splunk Enterprise | ❌ amd64 only — use `--siem opensearch` instead |
+
+**Port layout** (Mac host → VM/container):
+
+| Host port | Destination | What it is |
+|---|---|---|
+| `9200` | Docker | OpenSearch API |
+| `5601` | Docker | OpenSearch Dashboards |
+| `8000` | Docker | Splunk mock UI |
+| `8088` | Docker | Splunk HEC (event ingestion) |
+| `9098` | VM port 9099 | Victim agent HTTP API |
+| `9088` | VM port 8888 | Intentionally vulnerable service |
 
 ---
 

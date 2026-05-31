@@ -5,19 +5,32 @@ Multi-SIEM detection validation platform. Simulate CVE-based attacks against a r
 ## Quick start
 
 ```bash
-# Prerequisites: Docker 24+, Vagrant + vagrant-qemu, Python 3.12, uv
-# Check your environment first — fixes problems before they waste time
+# Prerequisites: Docker 24+, Vagrant + vagrant-qemu + QEMU, Python 3.12, uv
+git clone https://github.com/saadabbasi-playground/detectionvalidation.git detection-validator
+cd detection-validator
+uv venv && uv pip install -e ".[dev]"
+source .venv/bin/activate
+
+# Save password, then run the full end-to-end demo in one command
+echo 'export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"' >> ~/.zshrc && source ~/.zshrc
+dv demo
+# Expected: 7 PASS / 2 FAIL (LSASS + Nmap are out of scope for this scenario)
+```
+
+Or step by step:
+
+```bash
+# Check your environment first
 dv doctor
 
 # Start SIEM stack
-export OPENSEARCH_INITIAL_ADMIN_PASSWORD="<your-password>"
-./dv up lab --siem opensearch --profile tiny
+./dv up lab --siem opensearch --profile standard
 
 # Start Vagrant VM (real auditd telemetry)
 cd vagrant && vagrant up && cd ..
 
-# Simulate attack, validate live, generate report
-dv attack --cve CVE-2021-44228 --target vagrant --agent-port 9098 --watch
+# Run exploit, validate live, generate report
+dv attack --cve CVE-2021-44228 --target vagrant --mode exploit
 dv validate examples/detections/sigma/ --since 1 --format json | dv report
 dv validate examples/detections/sigma/ --since 1 --format json | dv report --format html -o report.html
 
