@@ -107,6 +107,62 @@ def _render_results(
         err_console.print(f"\n[green]✓[/] Updated detections written to [bold]{output}[/]")
 
 
+# ── SIEM registry helpers ──────────────────────────────────────────────────────
+
+def _registry_path() -> Path:
+    return Path.home() / ".detectionvalidator" / "siems.yaml"
+
+
+def _load_registry() -> list[dict]:
+    p = _registry_path()
+    if not p.exists():
+        return []
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        return data.get("siems", []) or []
+    except Exception:
+        return []
+
+
+def _find_siem(name: str) -> "dict | None":
+    for s in _load_registry():
+        if s.get("name") == name:
+            return s
+    return None
+
+
+def _save_registry(entries: list[dict]) -> None:
+    p = _registry_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    import yaml as _yaml
+    p.write_text(_yaml.dump({"siems": entries}, default_flow_style=False), encoding="utf-8")
+
+
+def _siem_to_engine_kwargs(cfg: dict) -> dict:
+    """Convert a registry SIEM entry to validate_corpus keyword arguments."""
+    siem_type = cfg.get("type", "opensearch")
+    url = cfg.get("url", "https://localhost:9200").rstrip("/")
+    index = cfg.get("index", "dv-telemetry-*")
+    if siem_type in ("opensearch", "elasticsearch"):
+        return {
+            "siem": siem_type,
+            "os_host": url,
+            "os_user": cfg.get("username", "admin"),
+            "os_pass": cfg.get("password", ""),
+            "os_index": index,
+        }
+    if siem_type == "splunk":
+        return {
+            "siem": "splunk",
+            "splunk_hec": url,
+            "splunk_token": cfg.get("token", ""),
+        }
+    return {"siem": siem_type}
+
+
+# ── CLI groups ─────────────────────────────────────────────────────────────────
+
 @click.group()
 @click.version_option(package_name="detection-validator")
 def main() -> None:
@@ -168,14 +224,23 @@ def validate(rules: str, siem: str, since: float, index: str, output: str, fmt: 
         err_console.print(f"[red]No parseable rules found in:[/] {rules}")
         raise SystemExit(1)
 
-    err_console.print(f"[cyan]Loaded {len(detections)} rule(s)[/]  siem={siem}  since={since}h  index={index}\n")
+    # Check if --siem is a registry name; if so, use its stored credentials
+    siem_cfg = _find_siem(siem)
+    if siem_cfg is not None:
+        engine_kwargs = _siem_to_engine_kwargs(siem_cfg)
+        siem_label = f"{siem} ({siem_cfg.get('type','?')}  {siem_cfg.get('url','')})"
+    else:
+        engine_kwargs = {"siem": siem, "os_index": index}
+        siem_label = siem
+
+    err_console.print(f"[cyan]Loaded {len(detections)} rule(s)[/]  siem={siem_label}  since={since}h\n")
 
     t0 = _time.time()
     with Progress(SpinnerColumn(), TextColumn("{task.description}"),
                   transient=True, console=err_console) as prog:
-        prog.add_task(f"Querying {siem}…", total=None)
+        prog.add_task(f"Querying {siem_label}…", total=None)
         results: list[RuleResult] = validate_corpus(
-            detections, siem=siem, since_hours=since, os_index=index,
+            detections, since_hours=since, **engine_kwargs,
         )
     elapsed = _time.time() - t0
 
@@ -1093,24 +1158,135 @@ def siem_status(siem_type: str) -> None:
 
 
 @siem.command("test")
+@click.argument("name", required=False, default=None, metavar="[NAME]")
 @click.option("--type", "siem_type", default="opensearch", show_default=True,
-              type=click.Choice(["opensearch", "splunk"]))
+              type=click.Choice(["opensearch", "splunk"]),
+              help="Local SIEM type (used when NAME is not given).")
 @click.option("--index", default="dv-telemetry-*", show_default=True)
 @click.option("--size", default=3, show_default=True, help="Number of sample events to show.")
-def siem_test(siem_type: str, index: str, size: int) -> None:
+def siem_test(name: str | None, siem_type: str, index: str, size: int) -> None:
     """Run a test query and show sample events from the SIEM.
+
+    Pass NAME to test a SIEM registered via 'dv siem add'.
+    Omit NAME to test the local opensearch/splunk service.
 
     \b
     Examples:
-      dv siem test
-      dv siem test --type opensearch --size 5
+      dv siem test                     # local OpenSearch
+      dv siem test prod                # registry entry named 'prod'
+      dv siem test --type splunk       # local Splunk mock
     """
     import base64 as _b64
     import json as _json
     import os as _os
     import ssl
     import urllib.request
+    import urllib.error
 
+    # ── Registry-based test ───────────────────────────────────────────────────
+    if name is not None:
+        cfg = _find_siem(name)
+        if cfg is None:
+            err_console.print(
+                f"[red]No SIEM named '{name}' in registry.[/]  "
+                f"Run: [cyan]dv siem add {name} --type ...[/]"
+            )
+            raise SystemExit(1)
+
+        url = cfg.get("url", "https://localhost:9200").rstrip("/")
+        siem_cfg_type = cfg.get("type", "opensearch")
+        idx = cfg.get("index", index)
+        verify = cfg.get("verify_tls", True)
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        if not verify:
+            ctx.verify_mode = ssl.CERT_NONE
+
+        headers: dict = {"Content-Type": "application/json"}
+        if cfg.get("api_key"):
+            headers["Authorization"] = f"ApiKey {cfg['api_key']}"
+        elif cfg.get("username"):
+            creds = _b64.b64encode(
+                f"{cfg['username']}:{cfg.get('password','')}".encode()
+            ).decode()
+            headers["Authorization"] = f"Basic {creds}"
+        elif cfg.get("token"):
+            headers["Authorization"] = f"Splunk {cfg['token']}"
+
+        if siem_cfg_type in ("opensearch", "elasticsearch"):
+            # 1. Cluster health
+            try:
+                req = urllib.request.Request(f"{url}/_cluster/health", headers=headers)
+                with urllib.request.urlopen(req, context=ctx, timeout=8) as resp:
+                    health = _json.loads(resp.read())
+                status = health.get("status", "?")
+                nodes = health.get("number_of_nodes", "?")
+                style = {"green": "green", "yellow": "yellow", "red": "red"}.get(status, "white")
+                console.print(
+                    f"[green]✓[/] [{style}]{name}[/]  cluster_status={status}  nodes={nodes}  url={url}"
+                )
+            except urllib.error.HTTPError as exc:
+                err_console.print(f"[red]✗[/] {name}: HTTP {exc.code} — check URL/credentials")
+                raise SystemExit(1)
+            except Exception as exc:
+                err_console.print(f"[red]✗[/] {name}: {exc}")
+                raise SystemExit(1)
+
+            # 2. Event count in configured index
+            count_query = _json.dumps({"query": {"match_all": {}}}).encode()
+            try:
+                req2 = urllib.request.Request(
+                    f"{url}/{idx}/_count", data=count_query, headers=headers
+                )
+                with urllib.request.urlopen(req2, context=ctx, timeout=8) as resp2:
+                    n = _json.loads(resp2.read()).get("count", 0)
+                console.print(f"  [cyan]{idx}[/]: {n:,} documents")
+            except Exception:
+                console.print(f"  [dim]{idx}: (count unavailable)[/]")
+
+            # 3. Sample events
+            sample_q = _json.dumps({
+                "size": size,
+                "sort": [{"timestamp": {"order": "desc"}}],
+                "query": {"match_all": {}},
+                "_source": ["timestamp", "technique", "key", "exe", "uid", "cmd_output"],
+            }).encode()
+            try:
+                req3 = urllib.request.Request(
+                    f"{url}/{idx}/_search", data=sample_q, headers=headers
+                )
+                with urllib.request.urlopen(req3, context=ctx, timeout=8) as resp3:
+                    hits = _json.loads(resp3.read()).get("hits", {}).get("hits", [])
+                if hits:
+                    console.print()
+                    for h in hits:
+                        s = h["_source"]
+                        out = str(s.get("cmd_output", ""))[:80].replace("\n", " ")
+                        console.print(
+                            f"  [green]{s.get('technique','?'):12s}[/]  "
+                            f"[cyan]{s.get('key','?'):20s}[/]  "
+                            f"exe={s.get('exe','?')}"
+                        )
+                        if out:
+                            console.print(f"    [dim]{out}[/]")
+            except Exception:
+                pass
+        elif siem_cfg_type == "splunk":
+            try:
+                req = urllib.request.Request(
+                    f"{url}/services/server/info?output_mode=json", headers=headers
+                )
+                with urllib.request.urlopen(req, context=ctx, timeout=8) as resp:
+                    info = _json.loads(resp.read())
+                build = info.get("entry", [{}])[0].get("content", {}).get("build", "?")
+                console.print(f"[green]✓[/] {name}  Splunk build={build}  url={url}")
+            except Exception as exc:
+                err_console.print(f"[red]✗[/] {name}: {exc}")
+                raise SystemExit(1)
+        return
+
+    # ── Local type-based test (original behavior) ─────────────────────────────
     if siem_type == "opensearch":
         os_pass = _os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "")
         ctx = ssl.create_default_context()
@@ -1150,6 +1326,209 @@ def siem_test(siem_type: str, index: str, size: int) -> None:
                 console.print(f"    [dim]{out}[/]")
     else:
         err_console.print(f"[yellow]Test query not implemented for {siem_type}[/]")
+
+
+@siem.command("add")
+@click.argument("name")
+@click.option("--type", "siem_type", required=True,
+              type=click.Choice(["opensearch", "elasticsearch", "splunk"]),
+              help="SIEM backend type.")
+@click.option("--url", required=True,
+              help="Base URL, e.g. https://opensearch.example.com:9200")
+@click.option("--username", default=None, help="Basic-auth username.")
+@click.option("--password", default=None, help="Basic-auth password.")
+@click.option("--api-key", default=None, help="API key (Elasticsearch cloud).")
+@click.option("--token", default=None, help="HEC token (Splunk).")
+@click.option("--index", default="dv-telemetry-*", show_default=True,
+              help="Index pattern to query.")
+@click.option("--verify-tls/--no-verify-tls", default=True, show_default=True,
+              help="Verify TLS certificate.")
+def siem_add(
+    name: str, siem_type: str, url: str,
+    username: str | None, password: str | None,
+    api_key: str | None, token: str | None,
+    index: str, verify_tls: bool,
+) -> None:
+    """Register an external SIEM connection.
+
+    Stores credentials in ~/.detectionvalidator/siems.yaml.
+    Re-running with the same NAME replaces the existing entry.
+
+    \b
+    Examples:
+      dv siem add prod --type opensearch \\
+          --url https://opensearch.example.com:9200 \\
+          --username admin --password secret --no-verify-tls
+      dv siem add cloud --type elasticsearch \\
+          --url https://my.cloud.elastic.co:9243 --api-key abc123
+      dv siem add splunk-prod --type splunk \\
+          --url https://splunk.example.com:8088 --token my-hec-token
+    """
+    entries = [e for e in _load_registry() if e.get("name") != name]
+    entry: dict = {
+        "name": name, "type": siem_type,
+        "url": url.rstrip("/"), "verify_tls": verify_tls, "index": index,
+    }
+    if username:
+        entry["username"] = username
+    if password:
+        entry["password"] = password
+    if api_key:
+        entry["api_key"] = api_key
+    if token:
+        entry["token"] = token
+    entries.append(entry)
+    _save_registry(entries)
+    console.print(f"[green]✓[/] SIEM [bold]{name}[/] registered ({siem_type}  {url})")
+    console.print(f"  Verify: [cyan]dv siem test {name}[/]")
+
+
+@siem.command("list")
+def siem_list() -> None:
+    """List all registered SIEM connections."""
+    entries = _load_registry()
+    if not entries:
+        console.print("[dim]No SIEMs registered.[/]  Add one with: [cyan]dv siem add NAME --type ...[/]")
+        return
+    tbl = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    tbl.add_column("Name", style="bold")
+    tbl.add_column("Type", style="cyan")
+    tbl.add_column("URL")
+    tbl.add_column("Auth", style="dim")
+    tbl.add_column("Index", style="dim")
+    for e in entries:
+        auth = "apikey" if e.get("api_key") else ("token" if e.get("token") else "basic")
+        tbl.add_row(
+            e.get("name", "?"), e.get("type", "?"), e.get("url", "?"),
+            auth, e.get("index", "dv-telemetry-*"),
+        )
+    console.print(tbl)
+
+
+@siem.command("attach")
+@click.argument("name")
+def siem_attach(name: str) -> None:
+    """Configure Vector on the Vagrant VM to also ship events to a registered SIEM.
+
+    Appends a new sink to /etc/vector/vector.toml, validates the config,
+    and restarts Vector.  Every sink gets buffer.when_full=drop_newest to
+    prevent a slow external SIEM from deadlocking the local pipeline.
+
+    \b
+    Example:
+      dv siem add prod --type opensearch --url https://os.example.com:9200 \\
+          --username admin --password secret
+      dv siem attach prod
+    """
+    import base64 as _b64
+    import subprocess
+    from pathlib import Path as _Path
+
+    cfg = _find_siem(name)
+    if cfg is None:
+        err_console.print(
+            f"[red]No SIEM named '{name}' in registry.[/]  "
+            f"Run: [cyan]dv siem add {name} --type ...[/]"
+        )
+        raise SystemExit(1)
+
+    siem_type = cfg.get("type", "opensearch")
+    sink_name = re.sub(r"[^a-z0-9_]", "_", name.lower())
+
+    if siem_type in ("opensearch", "elasticsearch"):
+        url = cfg.get("url", "https://localhost:9200")
+        user = cfg.get("username", "admin")
+        pw = cfg.get("password", "")
+        idx = cfg.get("index", "dv-telemetry-%Y.%m.%d")
+        verify = str(cfg.get("verify_tls", True)).lower()
+        toml_block = (
+            f"\n[sinks.{sink_name}_out]\n"
+            f'type = "elasticsearch"\n'
+            f'inputs = ["parse_events"]\n'
+            f'endpoints = ["{url}"]\n'
+            f'api_version = "v8"\n'
+            f'suppress_type_name = true\n'
+            f'mode = "bulk"\n\n'
+            f"  [sinks.{sink_name}_out.auth]\n"
+            f'  strategy = "basic"\n'
+            f'  user = "{user}"\n'
+            f'  password = "{pw}"\n\n'
+            f"  [sinks.{sink_name}_out.bulk]\n"
+            f'  index = "{idx}"\n\n'
+            f"  [sinks.{sink_name}_out.tls]\n"
+            f"  verify_certificate = {verify}\n"
+            f"  verify_hostname = false\n\n"
+            f"  [sinks.{sink_name}_out.buffer]\n"
+            f'  type = "memory"\n'
+            f"  max_events = 1000\n"
+            f'  when_full = "drop_newest"\n'
+        )
+    elif siem_type == "splunk":
+        endpoint = cfg.get("url", "http://localhost:8088")
+        token = cfg.get("token", "")
+        toml_block = (
+            f"\n[sinks.{sink_name}_out]\n"
+            f'type = "splunk_hec_logs"\n'
+            f'inputs = ["parse_events"]\n'
+            f'endpoint = "{endpoint}"\n'
+            f'token = "{token}"\n\n'
+            f"  [sinks.{sink_name}_out.buffer]\n"
+            f'  type = "memory"\n'
+            f"  max_events = 1000\n"
+            f'  when_full = "drop_newest"\n'
+        )
+    else:
+        err_console.print(f"[red]Unsupported SIEM type: {siem_type}[/]")
+        raise SystemExit(1)
+
+    vagrant_dir = _Path(__file__).parents[2] / "vagrant"
+    if not vagrant_dir.exists():
+        err_console.print(f"[red]vagrant/ directory not found: {vagrant_dir}[/]")
+        raise SystemExit(1)
+
+    # Base64-encode the block to avoid shell quoting issues over SSH
+    block_b64 = _b64.b64encode(toml_block.encode()).decode()
+    steps = [
+        ("Append sink to /etc/vector/vector.toml",
+         f"echo '{block_b64}' | base64 -d | sudo tee -a /etc/vector/vector.toml > /dev/null"),
+        ("Validate Vector config",
+         "sudo vector validate /etc/vector/vector.toml"),
+        ("Restart Vector",
+         "sudo systemctl restart vector"),
+    ]
+
+    failed = 0
+    for label, cmd in steps:
+        console.print(f"  ▶  {label}…", end="")
+        try:
+            r = subprocess.run(
+                ["vagrant", "ssh", "-c", cmd],
+                capture_output=True, text=True, timeout=30,
+                cwd=str(vagrant_dir),
+            )
+            if r.returncode == 0:
+                console.print(" [green]✓[/]")
+            else:
+                failed += 1
+                err_text = (r.stderr or r.stdout).strip().splitlines()
+                console.print(f" [red]✗[/]  {err_text[-1] if err_text else '?'}")
+        except subprocess.TimeoutExpired:
+            failed += 1
+            console.print(" [red]✗[/]  timeout")
+        except Exception as exc:
+            failed += 1
+            console.print(f" [red]✗[/]  {exc}")
+
+    console.print()
+    if failed == 0:
+        console.print(f"[green]✓[/] Vector now shipping events to [bold]{name}[/] ({siem_type})")
+        console.print(
+            f"  Verify: [cyan]dv attack --cve CVE-2021-44228 --target vagrant ...[/]\n"
+            f"          [cyan]dv validate examples/detections/sigma/ --siem {name} --since 1[/]"
+        )
+    else:
+        console.print(f"[red]{failed} step(s) failed.[/]")
+        raise SystemExit(1)
 
 
 @main.group()
