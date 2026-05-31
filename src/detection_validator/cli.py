@@ -351,7 +351,9 @@ def report(results_file: str, fmt: str, output: str) -> None:
 @main.command()
 @click.option("--fix", is_flag=True, default=False,
               help="Attempt to automatically fix problems where possible.")
-def doctor(fix: bool) -> None:
+@click.option("--canary", is_flag=True, default=False,
+              help="Emit a synthetic event through victim-agent and verify it lands in OpenSearch.")
+def doctor(fix: bool, canary: bool) -> None:
     """Check that your environment is ready to run detection-validator.
 
     Verifies tool versions, Docker/Vagrant state, running containers,
@@ -360,7 +362,8 @@ def doctor(fix: bool) -> None:
     \b
     Run this before your first use or when something isn't working:
       dv doctor
-      dv doctor --fix   # auto-populate empty caches
+      dv doctor --fix      # auto-populate empty caches
+      dv doctor --canary   # end-to-end telemetry roundtrip test
     """
     import os
     import shutil
@@ -590,6 +593,114 @@ def doctor(fix: bool) -> None:
     except Exception as exc:
         warn("CVE KB unavailable", str(exc)[:80])
 
+    # ── Canary: end-to-end telemetry roundtrip ───────────────────────────────
+    if canary:
+        import json as _json
+        import time as _time
+        import uuid as _uuid
+
+        canary_id = f"dv-canary-{_uuid.uuid4().hex[:12]}"
+        agent_url = "http://localhost:9098/simulate"
+        payload = {
+            "technique": "DV_CANARY",
+            "key": "dv_canary",
+            "exe": "/usr/bin/dv_canary",
+            "uid": "0",
+            "event_type": "SYSCALL",
+            "extra": {"cmd_output": canary_id, "canary_id": canary_id},
+        }
+        data = _json.dumps(payload).encode()
+        req = urllib.request.Request(
+            agent_url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        emit_ok = False
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    emit_ok = True
+                    ok("Canary emitted to victim-agent", f"id={canary_id}")
+                else:
+                    fail("Canary emit failed", f"HTTP {resp.status}")
+        except Exception as exc:
+            fail("Canary emit failed", str(exc)[:80])
+
+        if emit_ok:
+            # Poll OpenSearch for the canary by canary_id.
+            # match_phrase, not match — hyphens tokenize and would match any past canary.
+            query = _json.dumps({
+                "query": {"match_phrase": {"canary_id": canary_id}},
+                "size": 1,
+            }).encode()
+            found_after = None
+            for _scheme in ("https", "http"):
+                _ctx = None
+                if _scheme == "https":
+                    _ctx = ssl.create_default_context()
+                    _ctx.check_hostname = False
+                    _ctx.verify_mode = ssl.CERT_NONE
+                start = _time.time()
+                deadline = start + 20.0
+                last_err = ""
+                while _time.time() < deadline:
+                    try:
+                        _req = urllib.request.Request(
+                            f"{_scheme}://localhost:9200/dv-telemetry-*/_search",
+                            data=query,
+                            headers={
+                                "Content-Type": "application/json",
+                                "Authorization": f"Basic {creds}" if creds else "",
+                            },
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(_req, context=_ctx, timeout=4) as resp:
+                            body = _json.loads(resp.read())
+                            total = body.get("hits", {}).get("total", {})
+                            n = total.get("value", 0) if isinstance(total, dict) else int(total)
+                            if n > 0:
+                                found_after = _time.time() - start
+                                break
+                    except Exception as exc:
+                        last_err = str(exc)[:80]
+                    _time.sleep(1)
+                if found_after is not None:
+                    ok(f"Canary roundtrip {found_after:.1f}s", f"scheme={_scheme}")
+                    break
+            else:
+                fail("Canary not found in OpenSearch within 20s",
+                     "pipeline stuck — see dv repair")
+                # Auto-diagnose: which stage broke?
+                vagrant_dir = _Path(__file__).parents[2] / "vagrant"
+                for cmd, label in [
+                    (["sudo", "auditctl", "-s"], "auditd status"),
+                    (["sudo", "systemctl", "is-active", "victim-agent", "vector"], "service status"),
+                    (["sudo", "journalctl", "-u", "vector", "--no-pager", "--since",
+                      "5 minutes ago"], "vector logs"),
+                ]:
+                    try:
+                        r = subprocess.run(
+                            ["vagrant", "ssh", "-c", " ".join(cmd)],
+                            capture_output=True, text=True, timeout=10,
+                            cwd=vagrant_dir,
+                        )
+                        out = (r.stdout + r.stderr).strip()
+                        # Surface only the relevant lines
+                        if "auditd" in label:
+                            for line in out.splitlines():
+                                if "enabled" in line:
+                                    warn(f"diagnose: {label}", line.strip()[:80])
+                                    break
+                        elif "service" in label:
+                            warn(f"diagnose: {label}", out.replace("\n", " ")[:80])
+                        else:
+                            err_lines = [l for l in out.splitlines() if "error" in l.lower() or "warn" in l.lower()]
+                            if err_lines:
+                                warn(f"diagnose: {label}", err_lines[-1][:80])
+                    except Exception as exc:
+                        warn(f"diagnose: {label}", f"could not collect: {str(exc)[:60]}")
+
     # ── Print results ─────────────────────────────────────────────────────────
     console.print()
     for icon, label, detail in checks:
@@ -609,6 +720,60 @@ def doctor(fix: bool) -> None:
             f"[bold red]{errors} error(s)[/]  [yellow]{warnings} warning(s)[/]"
             " — fix errors before running dv attack / dv validate."
         )
+        raise SystemExit(1)
+
+
+@main.command()
+def repair() -> None:
+    """Reset the Vagrant VM pipeline to a known-good state.
+
+    SSH's into the victim VM and:
+      1. Re-enables auditd event collection (auditctl -e 1)
+      2. Restarts victim-agent (re-attaches to current audit.log after rotation)
+      3. Restarts Vector (clears stuck retry loops)
+
+    Run this when `dv doctor --canary` fails. Idempotent — safe to re-run.
+    """
+    import subprocess
+    from pathlib import Path as _Path
+
+    vagrant_dir = _Path(__file__).parents[2] / "vagrant"
+    if not vagrant_dir.exists():
+        err_console.print(f"[red]✗[/] vagrant/ directory not found at {vagrant_dir}")
+        raise SystemExit(1)
+
+    steps = [
+        ("Re-enable auditd event collection", "sudo auditctl -e 1"),
+        ("Restart victim-agent",              "sudo systemctl restart victim-agent"),
+        ("Restart Vector",                    "sudo systemctl restart vector"),
+    ]
+    failed = 0
+    for label, cmd in steps:
+        console.print(f"  ▶  {label}…", end="")
+        try:
+            r = subprocess.run(
+                ["vagrant", "ssh", "-c", cmd],
+                capture_output=True, text=True, timeout=30,
+                cwd=vagrant_dir,
+            )
+            if r.returncode == 0:
+                console.print(" [green]✓[/]")
+            else:
+                failed += 1
+                err_text = (r.stderr or r.stdout).strip().splitlines()
+                console.print(f" [red]✗[/]  {err_text[-1] if err_text else '?'}")
+        except subprocess.TimeoutExpired:
+            failed += 1
+            console.print(" [red]✗[/]  timeout")
+        except Exception as exc:
+            failed += 1
+            console.print(f" [red]✗[/]  {exc}")
+
+    console.print()
+    if failed == 0:
+        console.print("[bold green]Repair complete.[/]  Run [bold]dv doctor --canary[/] to verify.")
+    else:
+        console.print(f"[bold red]{failed} step(s) failed.[/]")
         raise SystemExit(1)
 
 

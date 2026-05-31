@@ -58,6 +58,13 @@ Vagrant.configure("2") do |config|
     sed "s/change-me/${OS_PASS}/g" /tmp/vector.yaml > /etc/vector/vector.yaml
     chmod 644 /etc/vector/vector.yaml
 
+    # Fail fast if password substitution didn't happen — silent auth failures
+    # were the #1 cause of "Vector says healthy but no events in OpenSearch".
+    if grep -q 'password = "change-me"' /etc/vector/vector.toml; then
+      echo "FATAL: password substitution failed in vector.toml" >&2
+      exit 1
+    fi
+
     augenrules --load 2>/dev/null || auditctl -R /etc/audit/rules.d/dv-audit.rules
 
     systemctl daemon-reload
