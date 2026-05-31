@@ -902,27 +902,13 @@ def demo(cve: str, rules: str, profile: str) -> None:
     else:
         console.print("  [green]✓[/] VM already running")
 
-    # ── 3: Port 8888 check (Jupyter conflict workaround) ─────────────────────
-    console.print("\n[bold cyan]▶ Step 3/6  Port 8888 check[/]")
-    vuln_port = "8888"
-    if _port_open(8888):
-        if not _port_open(9088):
-            console.print("  [yellow]⚠[/] Port 8888 busy — creating SSH tunnel on 9088…")
-            key = VAGRANT_DIR / ".vagrant/machines/default/qemu/private_key"
-            subprocess.Popen([
-                "ssh", "-f", "-N", "-L", "9088:localhost:8888",
-                "-p", "50022",
-                "-i", str(key),
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "vagrant@127.0.0.1",
-            ])
-            _time.sleep(2)
-        else:
-            console.print("  [dim]Tunnel on 9088 already active[/]")
-        vuln_port = "9088"
+    # ── 3: Confirm vulnerable-service port ───────────────────────────────────
+    console.print("\n[bold cyan]▶ Step 3/6  Vulnerable service port[/]")
+    vuln_port = "9088"
+    if _port_open(9088):
+        console.print("  [green]✓[/] Vulnerable service reachable on 9088")
     else:
-        console.print("  [green]✓[/] Port 8888 available")
+        console.print("  [dim]Port 9088 not yet open — will retry at attack time[/]")
 
     # ── 4: Canary + auto-repair ───────────────────────────────────────────────
     console.print("\n[bold cyan]▶ Step 4/6  Canary check[/]")
@@ -2766,7 +2752,7 @@ def _run_attack_direct(scenario_path: Path, agent_port: str, delay: float) -> No
                   "exploit: send a real HTTP exploit payload to the vulnerable service "
                   "on port 8888 — generates genuine auditd kernel events."
               ))
-@click.option("--vuln-port", default="8888", show_default=True,
+@click.option("--vuln-port", default="9088", show_default=True,
               help="Port of the vulnerable service (exploit mode only).")
 @click.option("--watch", is_flag=True, default=False,
               help="After the run, show the attack events that landed in OpenSearch.")

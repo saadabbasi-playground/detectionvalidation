@@ -29,7 +29,7 @@ Vagrant.configure("2") do |config|
     # Adding a second -netdev user creates a second SLiRP with the same 10.0.2.0/24
     # subnet, which breaks net0 forwarding entirely.
     # Host 9098 → guest 9099, leaving 9099 free for the Docker victim container.
-    qemu.extra_netdev_args = "hostfwd=tcp:127.0.0.1:9098-:9099,hostfwd=tcp:127.0.0.1:8888-:8888"
+    qemu.extra_netdev_args = "hostfwd=tcp:127.0.0.1:9098-:9099,hostfwd=tcp:127.0.0.1:9088-:8888"
     qemu.extra_qemu_args   = []
   end
 
