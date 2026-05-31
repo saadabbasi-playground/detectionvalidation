@@ -40,9 +40,7 @@ networks:
   detectval-lab:
     external: true
     name: detectval-lab
-  dv-net:
-    external: true
-    name: detection-validator_dv-net
+  dv-net: {}
 
 volumes:
   victim-logs: {}

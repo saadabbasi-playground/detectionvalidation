@@ -229,6 +229,9 @@ cmd_up() {
     local compose_cmd
     compose_cmd="$(build_compose_cmd "$stack" "$siem" "$windows" "$profile")"
     info "Starting stack: ${BOLD}${stack}${RESET}  siem=${siem}  profile=${profile}"
+    local native_platform="linux/$(detect_arch)"
+    export BUILDPLATFORM="${BUILDPLATFORM:-$native_platform}"
+    export TARGETPLATFORM="${TARGETPLATFORM:-$native_platform}"
     eval "$compose_cmd up --build ${detach}"
     ok "Stack '${stack}' is running. Use './dv status' to check."
 }

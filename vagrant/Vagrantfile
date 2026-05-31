@@ -48,13 +48,13 @@ Vagrant.configure("2") do |config|
     install -m 644 /tmp/dv-audit.rules               /etc/audit/rules.d/dv-audit.rules
     install -m 755 /tmp/victim-agent.py              /opt/victim-agent.py
     install -m 755 /tmp/vulnerable-service.py        /opt/vulnerable-service.py
-    install -m 644 /tmp/vector.toml                  /etc/vector/vector.toml
     install -m 644 /tmp/victim-agent.service         /etc/systemd/system/victim-agent.service
     install -m 644 /tmp/vulnerable-service.service   /etc/systemd/system/vulnerable-service.service
 
-    # Vector loads vector.yaml by default (not vector.toml).
-    # Substitute the OpenSearch password from the environment, then install.
+    # Substitute the OpenSearch password and Splunk token from the environment, then install.
     OS_PASS="${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DetectVal123!}"
+    sed "s/change-me/${OS_PASS}/g" /tmp/vector.toml > /etc/vector/vector.toml
+    chmod 644 /etc/vector/vector.toml
     sed "s/change-me/${OS_PASS}/g" /tmp/vector.yaml > /etc/vector/vector.yaml
     chmod 644 /etc/vector/vector.yaml
 
@@ -68,6 +68,6 @@ Vagrant.configure("2") do |config|
     echo "    Victim agent      : http://localhost:9099/health"
     echo "    Vulnerable service: http://localhost:8888/health"
     echo "    Audit log         : /var/log/audit/audit-events.jsonl"
-    echo "    Vector config     : /etc/vector/vector.yaml"
+    echo "    Vector config     : /etc/vector/vector.toml"
   SHELL
 end
