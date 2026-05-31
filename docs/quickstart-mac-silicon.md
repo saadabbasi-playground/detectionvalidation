@@ -674,6 +674,96 @@ cd vagrant && vagrant halt && cd ..
 
 ---
 
+## Using an existing SIEM
+
+You already have OpenSearch, Elastic Cloud, or Splunk running somewhere? Point `dv` at it instead of (or alongside) the local Docker one. Credentials are stored in `~/.detectionvalidator/siems.yaml`, separate from the project.
+
+### 1. Register your SIEM
+
+Open a terminal in the project directory with the venv active, then run the command for your SIEM type:
+
+**OpenSearch / AWS OpenSearch Service:**
+```bash
+dv siem add prod \
+  --type opensearch \
+  --url https://opensearch.example.com:9200 \
+  --username admin --password secret
+```
+
+Add `--no-verify-tls` if your instance uses a self-signed certificate.
+
+**Elastic Cloud:**
+```bash
+dv siem add elastic-cloud \
+  --type elasticsearch \
+  --url https://my-deployment.es.us-east-1.aws.elastic.co:9243 \
+  --api-key YOUR_API_KEY_HERE
+```
+
+**Splunk (HTTP Event Collector):**
+```bash
+dv siem add splunk-prod \
+  --type splunk \
+  --url https://splunk.example.com:8088 \
+  --token YOUR_HEC_TOKEN_HERE
+```
+
+### 2. Verify it works
+
+```bash
+dv siem list           # shows everything registered
+dv siem test prod      # connects, checks auth, prints 3 sample events
+```
+
+Expected output from `dv siem test prod`:
+
+```
+✓ opensearch at https://opensearch.example.com:9200
+  dv-telemetry-*: 1243 documents
+  sample events: …
+```
+
+If you see an auth error, double-check your username and password.
+If you see a certificate error, add `--no-verify-tls` when registering.
+
+### 3. Validate rules against it
+
+```bash
+dv validate examples/detections/sigma/ --siem prod --since 24
+```
+
+`prod` is the name you gave it in step 1. Everything else works the same as with the local SIEM.
+
+### 4. Ship telemetry to it (optional)
+
+If you want the Vagrant VM's real auditd events to flow to your SIEM as well as the local Docker OpenSearch:
+
+```bash
+dv siem attach prod
+```
+
+This SSHes into the VM, appends a Vector sink for your SIEM to `/etc/vector/vector.toml`, validates the config, and restarts Vector. The local pipeline keeps working — `attach` only adds a second output. The new sink drops events if your SIEM is slow, so it can never stall local telemetry.
+
+### Custom index pattern
+
+If your SIEM uses a different index or data stream, set it at registration time:
+
+```bash
+dv siem add prod \
+  --type opensearch \
+  --url https://opensearch.example.com:9200 \
+  --username admin --password secret \
+  --index logs-endpoint-*
+```
+
+Or override it per command:
+
+```bash
+dv validate examples/detections/sigma/ --siem prod --index logs-endpoint-* --since 24
+```
+
+---
+
 ## Daily workflow (after first-time setup)
 
 Every subsequent session is just:

@@ -514,6 +514,91 @@ dv migrate sigma sigma --rules examples/detections/sigma/ -o normalised/
 
 ---
 
+## Using an existing SIEM
+
+You can point `dv` at a SIEM you already have running — on-premises OpenSearch, Elastic Cloud, an internal Splunk instance, etc. — instead of (or in addition to) the local Docker one.
+
+Credentials are stored in `~/.detectionvalidator/siems.yaml` and never touch the project directory.
+
+### Step 1 — Register the SIEM
+
+```bash
+# OpenSearch / AWS OpenSearch Service
+dv siem add prod \
+  --type opensearch \
+  --url https://opensearch.example.com:9200 \
+  --username admin --password secret
+
+# Self-signed or internal certificate? Add --no-verify-tls
+dv siem add internal \
+  --type opensearch \
+  --url https://192.168.1.50:9200 \
+  --username admin --password secret \
+  --no-verify-tls
+
+# Elastic Cloud
+dv siem add elastic-cloud \
+  --type elasticsearch \
+  --url https://my-deployment.es.us-east-1.aws.elastic.co:9243 \
+  --api-key YOUR_API_KEY_HERE
+
+# Splunk (HTTP Event Collector)
+dv siem add splunk-prod \
+  --type splunk \
+  --url https://splunk.example.com:8088 \
+  --token YOUR_HEC_TOKEN_HERE
+```
+
+Running `dv siem add` a second time with the same name replaces the entry.
+
+### Step 2 — Verify connectivity
+
+```bash
+# List everything registered
+dv siem list
+
+# Test a named connection — checks auth, counts docs, shows 3 sample events
+dv siem test prod
+```
+
+### Step 3 — Validate rules against it
+
+Pass the registered name to `--siem` instead of `opensearch` or `splunk`:
+
+```bash
+dv validate examples/detections/sigma/ --siem prod --since 24
+```
+
+### Step 4 — Ship telemetry to it (optional)
+
+If you want the Vagrant VM to send its auditd events to your SIEM in addition to the local Docker OpenSearch, run:
+
+```bash
+dv siem attach prod
+```
+
+This SSHes into the VM, appends a new sink to `/etc/vector/vector.toml`, validates the config, and restarts Vector. The local pipeline keeps running — `attach` only adds a second output. The new sink uses `when_full = "drop_newest"` so a slow external SIEM can never stall the local pipeline.
+
+### Index pattern
+
+By default `dv` queries `dv-telemetry-*`. If your SIEM uses a different index or data stream, override it at registration time:
+
+```bash
+dv siem add prod \
+  --type opensearch \
+  --url https://opensearch.example.com:9200 \
+  --username admin --password secret \
+  --index logs-endpoint-*
+```
+
+Or override per-command:
+
+```bash
+dv validate examples/detections/sigma/ --siem prod --index logs-endpoint-* --since 24
+```
+
+---
+
 ## Deploy rules to a live SIEM
 
 Push rules directly to a running SIEM so they fire automatically on new events.
@@ -859,6 +944,9 @@ Ready-to-use rules in `examples/detections/`:
 | `dv migrate` | Convert rules between formats (sigma → splunk / kql / sigma) |
 | `dv deploy` | Push rules to a live SIEM as alerting monitors or saved searches |
 | `dv badge` | Generate an SVG or JSON ATT&CK coverage badge |
+| `dv siem add` | Register an external SIEM (OpenSearch / Elasticsearch / Splunk) |
+| `dv siem list` | List all registered SIEM connections |
+| `dv siem attach` | Configure Vector on the VM to also ship events to a registered SIEM |
 | `dv siem status` | Check SIEM connectivity and document counts |
 | `dv siem test` | Run a test query and display sample events |
 | `dv agent status` | Check victim agent health endpoint |
