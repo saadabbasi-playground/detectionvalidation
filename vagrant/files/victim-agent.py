@@ -159,16 +159,27 @@ def _tail_loop(audit_log: str) -> None:
     print(f"[victim-agent] tailing real auditd: {audit_log}", flush=True)
     while not os.path.exists(audit_log):
         time.sleep(1)
-    with open(audit_log, encoding="utf-8", errors="replace") as fh:
-        fh.seek(0, 2)
-        while True:
-            line = fh.readline()
-            if line:
-                ev = _parse_audit_line(line)
-                if ev:
-                    _emit(ev)
-            else:
-                time.sleep(0.2)
+    fh = open(audit_log, encoding="utf-8", errors="replace")
+    fh.seek(0, 2)
+    current_inode = os.fstat(fh.fileno()).st_ino
+    while True:
+        line = fh.readline()
+        if line:
+            ev = _parse_audit_line(line)
+            if ev:
+                _emit(ev)
+        else:
+            time.sleep(0.2)
+            # Detect auditd log rotation: path inode changed → re-open new file
+            try:
+                if os.stat(audit_log).st_ino != current_inode:
+                    fh.close()
+                    fh = open(audit_log, encoding="utf-8", errors="replace")
+                    fh.seek(0, 2)
+                    current_inode = os.fstat(fh.fileno()).st_ino
+                    print("[victim-agent] audit.log rotated — reopened", flush=True)
+            except OSError:
+                pass
 
 
 # ── HTTP agent API (port 9099) ─────────────────────────────────────────────
