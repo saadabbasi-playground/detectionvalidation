@@ -51,7 +51,7 @@ Vagrant.configure("2") do |config|
     install -m 644 /tmp/victim-agent.service         /etc/systemd/system/victim-agent.service
     install -m 644 /tmp/vulnerable-service.service   /etc/systemd/system/vulnerable-service.service
 
-    # Substitute the OpenSearch password and Splunk token from the environment, then install.
+    # Substitute the OpenSearch password from the environment, then install.
     OS_PASS="${OPENSEARCH_INITIAL_ADMIN_PASSWORD:-DetectVal123!}"
     sed "s/change-me/${OS_PASS}/g" /tmp/vector.toml > /etc/vector/vector.toml
     chmod 644 /etc/vector/vector.toml
