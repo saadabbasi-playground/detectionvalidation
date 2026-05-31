@@ -196,9 +196,18 @@ build_compose_cmd() {
         fi
     fi
 
+    # Gate opensearch-dashboards on DV_ENABLE_DASHBOARDS (default: true; tiny.env sets false)
+    local enable_dashboards="true"
+    local _dbval
+    _dbval="$(grep -E '^DV_ENABLE_DASHBOARDS=' "$profile_file" 2>/dev/null | head -1 | cut -d= -f2)"
+    [[ -n "$_dbval" ]] && enable_dashboards="$_dbval"
+    local dashboards_flag=""
+    [[ "$enable_dashboards" != "false" ]] && dashboards_flag="--profile dashboards"
+
     # Emit the full compose command (no trailing args — callers append up/down/etc.)
     echo "docker compose --project-directory ${SCRIPT_DIR} \
 --env-file ${profile_file} \
+${dashboards_flag} \
 ${compose_files[*]}"
 }
 

@@ -778,6 +778,125 @@ def repair() -> None:
 
 
 @main.command()
+@click.option("--cve", default="CVE-2021-44228", show_default=True,
+              help="CVE to exploit in the demo.")
+@click.option("--rules", default="examples/detections/sigma/", show_default=True,
+              help="Sigma rules directory to validate.")
+@click.option("--profile", default="tiny", show_default=True,
+              help="Docker stack resource profile (tiny/standard/full).")
+def demo(cve: str, rules: str, profile: str) -> None:
+    """One-shot demo: bring up the stack, run an exploit, validate rules.
+
+    Starts the Docker stack (OpenSearch) and Vagrant VM if not running,
+    runs the canary check (auto-repairs if needed), fires the exploit,
+    waits for Vector to flush, then validates the Sigma rule corpus.
+
+    \b
+    Examples:
+      dv demo
+      dv demo --cve CVE-2021-26855
+      dv demo --rules examples/detections/sigma/ --profile standard
+    """
+    import subprocess
+    import sys as _sys
+    import time as _time
+    import socket as _socket
+    from pathlib import Path as _Path
+
+    REPO = _Path(__file__).parents[2]
+    VAGRANT_DIR = REPO / "vagrant"
+
+    def _run(cmd: list, cwd=None, check: bool = True) -> subprocess.CompletedProcess:
+        console.print(f"[dim]$ {' '.join(str(c) for c in cmd)}[/]")
+        return subprocess.run(cmd, cwd=str(cwd or REPO), check=check)
+
+    def _port_open(port: int) -> bool:
+        s = _socket.socket()
+        s.settimeout(1)
+        try:
+            s.connect(("127.0.0.1", port))
+            return True
+        except Exception:
+            return False
+        finally:
+            s.close()
+
+    # ── 1: Docker stack ───────────────────────────────────────────────────────
+    console.print("\n[bold cyan]▶ Step 1/6  Docker stack[/]")
+    _run(["./dv", "up", "lab", "--siem", "opensearch", "--profile", profile])
+
+    # ── 2: Vagrant VM ─────────────────────────────────────────────────────────
+    console.print("\n[bold cyan]▶ Step 2/6  Vagrant VM[/]")
+    r = subprocess.run(
+        ["vagrant", "status", "--machine-readable"],
+        capture_output=True, text=True, cwd=str(VAGRANT_DIR),
+    )
+    if "state,running" not in (r.stdout + r.stderr):
+        console.print("  VM not running — starting it (this may take a few minutes)…")
+        _run(["vagrant", "up"], cwd=VAGRANT_DIR)
+    else:
+        console.print("  [green]✓[/] VM already running")
+
+    # ── 3: Port 8888 check (Jupyter conflict workaround) ─────────────────────
+    console.print("\n[bold cyan]▶ Step 3/6  Port 8888 check[/]")
+    vuln_port = "8888"
+    if _port_open(8888):
+        if not _port_open(9088):
+            console.print("  [yellow]⚠[/] Port 8888 busy — creating SSH tunnel on 9088…")
+            key = VAGRANT_DIR / ".vagrant/machines/default/qemu/private_key"
+            subprocess.Popen([
+                "ssh", "-f", "-N", "-L", "9088:localhost:8888",
+                "-p", "50022",
+                "-i", str(key),
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "vagrant@127.0.0.1",
+            ])
+            _time.sleep(2)
+        else:
+            console.print("  [dim]Tunnel on 9088 already active[/]")
+        vuln_port = "9088"
+    else:
+        console.print("  [green]✓[/] Port 8888 available")
+
+    # ── 4: Canary + auto-repair ───────────────────────────────────────────────
+    console.print("\n[bold cyan]▶ Step 4/6  Canary check[/]")
+    canary_r = subprocess.run(
+        [_sys.argv[0], "doctor", "--canary"],
+        capture_output=True, text=True,
+    )
+    output_text = canary_r.stdout + canary_r.stderr
+    if canary_r.returncode != 0 or "FAIL" in output_text:
+        console.print("  [yellow]Canary failed — attempting auto-repair…[/]")
+        _run([_sys.argv[0], "repair"])
+        _run([_sys.argv[0], "doctor", "--canary"])
+    else:
+        console.print(canary_r.stdout.strip())
+
+    # ── 5: Attack ─────────────────────────────────────────────────────────────
+    console.print(f"\n[bold cyan]▶ Step 5/6  Attack  {cve}[/]")
+    _run([
+        _sys.argv[0], "attack",
+        "--cve", cve.upper(),
+        "--target", "vagrant",
+        "--agent-port", "9098",
+        "--mode", "exploit",
+        "--vuln-port", vuln_port,
+    ])
+
+    # ── 6: Wait + validate ────────────────────────────────────────────────────
+    console.print("\n[bold cyan]▶ Step 6/6  Waiting 5s for Vector to flush…[/]")
+    _time.sleep(5)
+    console.print(f"[bold cyan]            Validating  {rules}[/]")
+    _run([_sys.argv[0], "validate", rules, "--since", "0.1"])
+
+    console.print(
+        "\n[bold green]✓ Demo complete.[/]  "
+        "View events at [cyan]http://localhost:5601[/]"
+    )
+
+
+@main.command()
 @click.argument("source_fmt")
 @click.argument("target_fmt")
 @click.option("--rules", default=".", show_default=True,
