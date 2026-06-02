@@ -428,6 +428,227 @@ dv match --events events.jsonl examples/detections/sigma/ --since 0 --format jso
 
 ---
 
+## Connecting to an external SIEM (Splunk or Elastic)
+
+By default, `dv` ships telemetry to the local OpenSearch container and validates against it. You can point it at any existing Splunk or Elasticsearch instance instead — on-prem or cloud.
+
+There are two independent concerns:
+- **Validating rules** — querying your SIEM for rule hits (`dv validate --siem <name>`)
+- **Shipping telemetry** — routing attack events from Vector to your SIEM so there is something to query
+
+Both require registering the SIEM first.
+
+---
+
+### Step A — Register the SIEM
+
+Credentials are stored locally in `~/.detectionvalidator/siems.yaml` and never touch the project directory. Re-running `dv siem add` with the same name replaces the entry.
+
+#### Splunk (on-prem)
+
+Splunk needs two things enabled: the **HTTP Event Collector (HEC)** for ingesting events, and the **REST API** for querying.
+
+1. In Splunk Web → Settings → Data Inputs → HTTP Event Collector → Global Settings: enable HEC and note the port (default `8088`).
+2. Create a new HEC token. Copy the token value.
+3. Note your Splunk management port (default `8089`).
+
+Register with the **management port** URL — `dv siem test` and `dv validate` use the REST API:
+
+```powershell
+dv siem add splunk-prod `
+    --type splunk `
+    --url https://splunk.example.com:8089 `
+    --token YOUR_HEC_TOKEN `
+    --no-verify-tls
+```
+
+> **On-prem TLS note:** If your Splunk instance uses a self-signed certificate, include `--no-verify-tls`. For a trusted cert, omit it.
+
+#### Splunk Cloud
+
+Splunk Cloud HEC endpoints follow the format `input-<stack>.cloud.splunk.com:8088`. The REST API is at `<stack>.splunkcloud.com:8089`.
+
+```powershell
+dv siem add splunk-cloud `
+    --type splunk `
+    --url https://your-stack.splunkcloud.com:8089 `
+    --token YOUR_HEC_TOKEN
+```
+
+#### Elasticsearch (on-prem)
+
+```powershell
+dv siem add elastic-prod `
+    --type elasticsearch `
+    --url https://elastic.example.com:9200 `
+    --username elastic `
+    --password YOUR_PASSWORD `
+    --no-verify-tls
+```
+
+#### Elastic Cloud
+
+Get the **Elasticsearch endpoint** from your Elastic Cloud deployment page (Kibana → Management → Copy endpoint). Create an API key under Stack Management → API Keys.
+
+```powershell
+dv siem add elastic-cloud `
+    --type elasticsearch `
+    --url https://my-deployment.es.us-east-1.aws.elastic.co:9243 `
+    --api-key YOUR_API_KEY_HERE
+```
+
+> **Index pattern:** By default `dv` queries `dv-telemetry-*`. If your telemetry lands under a different index or data stream (e.g. `logs-*`, `winlogbeat-*`), override it:
+> ```powershell
+> dv siem add elastic-cloud --type elasticsearch --url ... --api-key ... --index "logs-*"
+> ```
+
+---
+
+### Step B — Verify connectivity
+
+```powershell
+# List all registered SIEMs
+dv siem list
+
+# Test a specific connection — checks auth and returns cluster info
+dv siem test splunk-prod
+dv siem test elastic-cloud
+```
+
+Expected for Splunk:
+```
+✓ splunk-prod  Splunk build=9XXXX  url=https://splunk.example.com:8089
+```
+
+Expected for Elastic:
+```
+✓ elastic-cloud  cluster_status=green  nodes=3  url=https://...elastic.co:9243
+  logs-*: 1,234,567 documents
+```
+
+---
+
+### Step C — Ship telemetry to the external SIEM
+
+Attack events need to reach your external SIEM before you can validate against it. How you do this depends on whether you are using Vagrant or Docker.
+
+#### With Vagrant (macOS / Windows with Hyper-V)
+
+`dv siem attach` SSHes into the Vagrant VM and adds a new Vector output sink. The local OpenSearch pipeline keeps running — `attach` only adds a second destination:
+
+```powershell
+dv siem attach splunk-prod
+dv siem attach elastic-cloud
+```
+
+This modifies `/etc/vector/vector.toml` inside the VM and restarts Vector. Run attacks as normal — events flow to both your local OpenSearch and the external SIEM simultaneously.
+
+#### With Docker on Windows (manual Vector config)
+
+`dv siem attach` requires SSH access to the Vagrant VM, so it does not work in the Docker-only setup. Instead, add the sink directly to `configs/vector.toml` and restart the Vector container.
+
+**For Splunk:** add this block to `configs/vector.toml` (adjust the endpoint and token):
+
+```toml
+[sinks.splunk_external]
+type = "splunk_hec_logs"
+inputs = ["parse_sysmon"]
+endpoint = "https://splunk.example.com:8088"   # HEC port, not management port
+token = "YOUR_HEC_TOKEN"
+index = "main"
+
+  [sinks.splunk_external.encoding]
+  codec = "json"
+
+  [sinks.splunk_external.acknowledgements]
+  enabled = false
+
+  [sinks.splunk_external.tls]
+  verify_certificate = false   # set true if your cert is trusted
+```
+
+**For Elasticsearch / Elastic Cloud:** add this block to `configs/vector.toml`:
+
+```toml
+[sinks.elastic_external]
+type = "elasticsearch"
+inputs = ["parse_sysmon"]
+endpoints = ["https://my-deployment.es.us-east-1.aws.elastic.co:9243"]
+mode = "bulk"
+suppress_type_name = true
+api_version = "v8"
+
+  [sinks.elastic_external.auth]
+  strategy = "basic"
+  # For API key auth, use: strategy = "aws" is wrong — use the header approach below
+
+  [sinks.elastic_external.bulk]
+  index = "dv-telemetry-%Y.%m.%d"
+
+  [sinks.elastic_external.request.headers]
+  Authorization = "ApiKey YOUR_API_KEY_HERE"
+
+  [sinks.elastic_external.tls]
+  verify_certificate = true
+```
+
+> **For basic auth instead of API key**, replace the `[sinks.elastic_external.auth]` and `[sinks.elastic_external.request.headers]` blocks with:
+> ```toml
+>   [sinks.elastic_external.auth]
+>   strategy = "basic"
+>   user = "elastic"
+>   password = "YOUR_PASSWORD"
+> ```
+
+After editing `configs/vector.toml`, restart Vector to apply the change:
+
+```powershell
+docker restart dv-vector
+docker logs dv-vector --tail 20 2>&1 | Select-String "ERROR|WARN"
+```
+
+If Vector logs show no errors for the new sink, telemetry is flowing. Run an attack and verify:
+
+```powershell
+dv siem test elastic-cloud   # or splunk-prod
+```
+
+---
+
+### Step D — Validate rules against the external SIEM
+
+Pass the registered name to `--siem`:
+
+```powershell
+dv validate examples/detections/sigma/ --siem elastic-cloud --since 1
+dv validate examples/detections/sigma/ --siem splunk-prod --since 1
+```
+
+The validator translates each Sigma rule into the native query language, runs it against your SIEM, and reports PASS/FAIL exactly as it does for local OpenSearch.
+
+> **Splunk note:** `dv validate --siem splunk-prod` uses the Splunk REST search API (port 8089). This is separate from HEC (port 8088), which is write-only. Make sure your registered URL points to the management port (8089), not the HEC port (8088).
+
+Save and report as normal:
+
+```powershell
+dv validate examples/detections/sigma/ --siem elastic-cloud --since 24 --format json -o results.json
+dv report --results results.json --format html -o report.html
+```
+
+---
+
+### External SIEM quick reference
+
+| Task | Splunk | Elastic |
+|---|---|---|
+| Register | `dv siem add NAME --type splunk --url https://host:8089 --token TOKEN` | `dv siem add NAME --type elasticsearch --url https://host:9200 --api-key KEY` |
+| Test connection | `dv siem test NAME` | `dv siem test NAME` |
+| Ship telemetry (Vagrant) | `dv siem attach NAME` | `dv siem attach NAME` |
+| Ship telemetry (Docker) | Add `splunk_hec_logs` sink to `configs/vector.toml`, use HEC port 8088 | Add `elasticsearch` sink to `configs/vector.toml` |
+| Validate rules | `dv validate detections/ --siem NAME --since 1` | `dv validate detections/ --siem NAME --since 1` |
+
+---
+
 ## Stopping the stack
 
 In Git Bash:
