@@ -410,7 +410,7 @@ Export events from OpenSearch and match rules against them locally — no runnin
 curl -sk -u "admin:DetectVal123!" \
   "https://localhost:9200/dv-telemetry-*/_search?size=500" \
   -H "Content-Type: application/json" \
-  -d '{"query":{"term":{"source_type":"docker_logs"}}}' \
+  -d '{"query":{"term":{"source":"auditd-agent"}}}' \
   | python3 -c "
 import json, sys
 for h in json.load(sys.stdin)['hits']['hits']:
