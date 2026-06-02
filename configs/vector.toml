@@ -35,6 +35,16 @@ source = '''
     parsed, err = parse_json(.message)
     if err == null { ., _ = merge(., parsed) }
   }
+  # Drop Docker container metadata labels that conflict with OpenSearch field mappings.
+  # Docker adds labels like "label.com.docker.compose.project" (dotted paths) which
+  # OpenSearch treats as nested objects — clashing with the string mapping created by
+  # demo_logs events that arrive first. Dropping the label map avoids the mapping error.
+  del(.label)
+  del(.container_created_at)
+  del(.container_id)
+  del(.container_name)
+  del(.image)
+  del(.stream)
   # Parse ISO timestamp string to native type so Splunk HEC sink uses it correctly.
   if is_string(.timestamp) {
     ts, err = parse_timestamp(.timestamp, format: "%+")

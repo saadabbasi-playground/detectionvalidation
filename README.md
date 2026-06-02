@@ -16,11 +16,13 @@ Vagrant VM (Ubuntu 22.04 ARM64)    Mac host
 
 > **Apple Silicon (M1/M2/M3/M4):** fully supported. The Vagrant VM runs natively via QEMU with Apple Hypervisor Framework. No emulation, no Rosetta.
 
+> **Windows 11:** fully supported via Docker WSL2 backend. See [docs/windows-quickstart.md](docs/windows-quickstart.md) for the Windows-specific setup. The `dv` Python CLI runs in PowerShell; the `./dv` Docker launcher requires Git Bash.
+
 ---
 
 ## Quickest start — one command
 
-If you already have Docker Desktop, Vagrant, vagrant-qemu, and Python 3.12 installed:
+### macOS (requires Docker Desktop, Vagrant, vagrant-qemu, Python 3.12)
 
 ```bash
 git clone https://github.com/saadabbasi-playground/detectionvalidation.git detection-validator
@@ -33,6 +35,32 @@ dv demo
 ```
 
 `dv demo` starts the Docker stack, boots the VM, runs the canary check, fires a Log4Shell exploit, waits for telemetry, and validates 9 Sigma rules — all in one go. Expected result: **7 PASS / 2 FAIL** (LSASS and Nmap are intentionally excluded from this scenario).
+
+### Windows (requires Docker Desktop + WSL2, Git Bash, Python 3.12, uv)
+
+```powershell
+# PowerShell
+git clone https://github.com/saadabbasi-playground/detectionvalidation.git detection-validator
+cd detection-validator
+uv venv; uv pip install -e ".[dev]"
+.\.venv\Scripts\Activate.ps1
+$env:PYTHONUTF8 = "1"; $env:PYTHONIOENCODING = "utf-8"; chcp 65001 | Out-Null
+$env:OPENSEARCH_INITIAL_ADMIN_PASSWORD = "DetectVal123!"
+```
+
+```bash
+# Git Bash — start the Docker stack
+docker network create detectval-lab 2>/dev/null || true
+OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!" bash ./dv up lab --siem opensearch --profile standard
+```
+
+```powershell
+# PowerShell — run attack + validate (after containers are healthy)
+dv attack --cve CVE-2021-44228 --target docker --mode simulate
+dv validate examples/detections/sigma/ --since 1
+```
+
+Expected result: **5 PASS / 3 FAIL** (LSASS, MSHTA, and Nmap require Windows target or active Nmap scan). See [docs/windows-quickstart.md](docs/windows-quickstart.md) for full details.
 
 ---
 
@@ -53,6 +81,8 @@ There are two separate tools, both called `dv`:
 
 You need these installed before anything will work.
 
+### macOS
+
 | Tool | Required version | Install command |
 |---|---|---|
 | Docker Desktop | ≥ 24 | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) |
@@ -61,9 +91,23 @@ You need these installed before anything will work.
 | Vagrant | any | `brew install vagrant` |
 | vagrant-qemu plugin | any | `vagrant plugin install vagrant-qemu` |
 
+### Windows
+
+| Tool | Required version | Install command |
+|---|---|---|
+| Docker Desktop | ≥ 24 (WSL2 backend) | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/) |
+| Git + Git Bash | any | [git-scm.com](https://git-scm.com/downloads) |
+| Python | 3.12 | `winget install Python.Python.3.12` |
+| uv (Python package manager) | any | `winget install astral-sh.uv` |
+| Vagrant | optional | `winget install HashiCorp.Vagrant` (requires Hyper-V) |
+
+See [docs/windows-quickstart.md](docs/windows-quickstart.md) for the full Windows setup walkthrough.
+
 ---
 
 ## Installation
+
+### macOS / Linux
 
 Run these commands once, in order:
 
@@ -85,6 +129,31 @@ dv --help
 
 > **Note:** every time you open a new terminal, run `source .venv/bin/activate` again before using `dv`. Or prefix every command with `.venv/bin/dv` if you prefer not to activate.
 
+### Windows
+
+```powershell
+# 1. Clone the repository
+git clone https://github.com/saadabbasi-playground/detectionvalidation.git detection-validator
+cd detection-validator
+
+# 2. Create a Python virtual environment and install the tool
+uv venv
+uv pip install -e ".[dev]"
+
+# 3. Activate the virtual environment
+.\.venv\Scripts\Activate.ps1
+
+# 4. Enable UTF-8 (required — dv uses Unicode symbols in output)
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+chcp 65001 | Out-Null
+
+# 5. Confirm the CLI is available
+dv --help
+```
+
+See [docs/windows-quickstart.md](docs/windows-quickstart.md) for the full Windows walkthrough including Docker stack setup and known issues.
+
 ---
 
 ## Step 1 — Check your environment
@@ -96,6 +165,8 @@ dv doctor
 ```
 
 This checks Python, Docker, Vagrant, the Docker network, running containers, the victim agent, and local intelligence caches. Fix any ✗ errors before continuing. ⚠ warnings are non-blocking.
+
+> **Windows note:** `dv doctor` on Windows will show `⚠ uv not found` even when `uv` is installed — this is a PATH-lookup false negative and can be ignored. The `⚠ Vagrant not found` warning is also non-blocking; use `--target docker` instead of `--target vagrant` for attacks.
 
 Expected output once everything is installed and running:
 
@@ -128,6 +199,8 @@ All checks passed.
 
 The Docker stack runs OpenSearch (the SIEM), a Splunk mock receiver, Vector (the log shipper), and a Linux victim container.
 
+### macOS
+
 ```bash
 # Save the OpenSearch admin password permanently (run once)
 echo 'export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"' >> ~/.zshrc
@@ -135,6 +208,16 @@ source ~/.zshrc
 
 # Start the lab stack
 ./dv up lab --siem opensearch --profile standard
+```
+
+### Windows (Git Bash)
+
+```bash
+# Create the Docker network (one-time setup)
+docker network create detectval-lab
+
+# Start the lab stack
+OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!" bash ./dv up lab --siem opensearch --profile standard
 ```
 
 > **Note:** `DetectVal123!` is the default password for the local development environment only. It is not used for any external service. Every `dv validate`, `dv siem status`, and `dv deploy` command reads `OPENSEARCH_INITIAL_ADMIN_PASSWORD` from your environment.
@@ -217,7 +300,7 @@ cd ..
 
 Two modes are available. Use `--mode exploit` (real HTTP payloads to the vulnerable service) for the most realistic telemetry, or omit it for a lightweight simulation.
 
-### Mode: exploit (recommended — real kernel events)
+### Mode: exploit (recommended — real kernel events, macOS/Linux only)
 
 Sends actual HTTP exploit payloads to the intentionally vulnerable service running on the VM. The service triggers real `curl`, `id`, and `/etc/passwd` reads — captured by auditd as genuine kernel syscall events.
 
@@ -225,6 +308,8 @@ Sends actual HTTP exploit payloads to the intentionally vulnerable service runni
 dv attack --cve CVE-2021-44228 --target vagrant --mode exploit
 dv attack --cve CVE-2021-26855 --target vagrant --mode exploit
 ```
+
+> **Windows:** use `--target docker --mode simulate` instead. Docker containers on Windows cannot expose the kernel audit subsystem, but the synthetic events are structurally identical and sufficient for rule validation.
 
 Expected output for Log4Shell:
 
@@ -250,10 +335,20 @@ curl http://localhost:9088/health
 
 Posts hand-crafted audit records directly to the victim agent. No real exploit is executed. Useful when you just need telemetry quickly without caring about realism.
 
+macOS (Vagrant target):
+
 ```bash
 dv attack --cve CVE-2021-44228 --target vagrant --agent-port 9098 --watch
 dv attack --cve CVE-2021-34527 --target vagrant --agent-port 9098 --watch
 dv attack --cve CVE-2021-26855 --target vagrant --agent-port 9098 --watch
+```
+
+Windows (Docker target):
+
+```powershell
+dv attack --cve CVE-2021-44228 --target docker --mode simulate
+dv attack --cve CVE-2021-34527 --target docker --mode simulate
+dv attack --cve CVE-2021-26855 --target docker --mode simulate
 ```
 
 ### Available CVE scenarios
@@ -1001,6 +1096,17 @@ Ready-to-use rules in `examples/detections/`:
 │  Splunk mock localhost:8088   UI:         localhost:8000       │
 └────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Windows notes
+
+See [docs/windows-quickstart.md](docs/windows-quickstart.md) for the full Windows guide. Key differences:
+
+- Run `./dv up` / `./dv down` from **Git Bash**, not PowerShell.
+- Set `$env:PYTHONUTF8 = "1"` and `$env:PYTHONIOENCODING = "utf-8"` in PowerShell before using `dv`.
+- Use `--target docker --mode simulate` for attacks (no Vagrant required).
+- Expected result: **5 PASS / 3 FAIL** (LSASS, MSHTA, Nmap require Windows victim or Nmap scan).
 
 ---
 

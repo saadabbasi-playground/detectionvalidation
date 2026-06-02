@@ -637,10 +637,19 @@ def doctor(fix: bool, canary: bool) -> None:
 
     try:
         from detection_validator.mappers.cve_mapper import CVEKnowledgeBase, _DEFAULT_CACHE_DIR as _CVE_CACHE
-        kev_file = _CVE_CACHE / "kev.json"
+        # The KEV fetcher stores the cache as kev_catalog.json.gz (gzip-compressed).
+        # Fall back to kev.json for backwards compatibility with older cache layouts.
+        kev_file = _CVE_CACHE / "kev_catalog.json.gz"
+        if not kev_file.exists():
+            kev_file = _CVE_CACHE / "kev.json"
         if kev_file.exists():
+            import gzip as _gzip
             import json as _json
-            kev = _json.loads(kev_file.read_text(encoding="utf-8"))
+            if kev_file.suffix == ".gz":
+                with _gzip.open(kev_file, "rt", encoding="utf-8") as _f:
+                    kev = _json.load(_f)
+            else:
+                kev = _json.loads(kev_file.read_text(encoding="utf-8"))
             count = len(kev.get("vulnerabilities", kev)) if isinstance(kev, dict) else len(kev)
             ok(f"KEV cache: {count} entries")
         else:
