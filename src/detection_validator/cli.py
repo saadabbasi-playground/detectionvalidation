@@ -3442,5 +3442,159 @@ def query_cmd(rule: str, siem: str, deployable: bool, export_dir: str | None) ->
         raise SystemExit(1)
 
 
+@main.group()
+def telemetry() -> None:
+    """Fetch and index pre-recorded telemetry for offline detection testing."""
+
+
+@telemetry.command("capture")
+@click.option("--technique", "-t", required=True, metavar="TID",
+              help="ATT&CK technique ID, e.g. T1003.001")
+@click.option("--source", "source_name", default="replay", show_default=True,
+              help="Telemetry source name from the registry (dv telemetry sources).")
+@click.option("--platform", default="windows", show_default=True,
+              help="Target platform for OTRF dataset search.")
+@click.option("--file", "file_path", default=None, type=click.Path(exists=True),
+              help="Load events from a local JSON/JSONL file instead of OTRF.")
+@click.option("--os-url", default="http://localhost:9200", show_default=True,
+              help="OpenSearch base URL for bulk indexing.")
+@click.option("--no-index", is_flag=True, default=False,
+              help="Skip OpenSearch indexing; only normalise and print summary.")
+def telemetry_capture(
+    technique: str,
+    source_name: str,
+    platform: str,
+    file_path: str | None,
+    os_url: str,
+    no_index: bool,
+) -> None:
+    """Fetch a pre-recorded OTRF dataset and index it into OpenSearch.
+
+    Downloads the matching dataset for TECHNIQUE from the OTRF Security-Datasets
+    repository (or loads from --file), normalises every event to the ECS/Sysmon
+    schema, and bulk-indexes them into OpenSearch for use with `dv validate`.
+
+    Fully offline — works for Windows detections on any host OS (Mac, Linux).
+    The dataset is cached under data/otrf/ so subsequent runs are instant.
+
+    \b
+    Examples:
+      dv telemetry capture --technique T1003.001
+      dv telemetry capture --technique T1003.001 --no-index
+      dv telemetry capture --technique T1003.001 --file events.json
+      dv telemetry capture --technique T1059.001 --platform windows
+    """
+    from detection_validator.telemetry.base import NotAvailable, registry
+    from detection_validator.telemetry.replay import ReplaySource
+    from detection_validator.telemetry.indexer import bulk_index, index_name_for
+
+    # Build the source — user-supplied file overrides the registry lookup
+    if file_path:
+        source = ReplaySource(file_path=file_path)
+        source_label = f"file:{Path(file_path).name}"
+    else:
+        try:
+            source = registry.get(source_name)
+        except KeyError as exc:
+            err_console.print(f"[red]✗[/] {exc}")
+            raise SystemExit(1)
+        source_label = source_name
+
+    console.print(
+        f"\n[bold cyan]Fetching telemetry[/]  "
+        f"technique=[bold]{technique}[/]  source=[bold]{source_label}[/]  "
+        f"platform={platform}\n"
+    )
+
+    # ── 1: ensure() — fetch + normalise ──────────────────────────────────────
+    try:
+        batch = source.ensure(technique, platform)
+    except NotAvailable as exc:
+        err_console.print(f"[red]✗ Not available:[/] {exc.reason}")
+        raise SystemExit(1)
+
+    dataset_label = batch.source_name.removeprefix("otrf:")
+    console.print(f"  [green]✓[/] Dataset   [bold]{dataset_label}[/]")
+    console.print(f"  [green]✓[/] Events    [bold]{len(batch):,}[/]  (fidelity={batch.fidelity})")
+
+    if no_index:
+        console.print("  [dim]Indexing skipped (--no-index)[/]")
+        _print_capture_summary(technique, dataset_label, len(batch), index_name_for(technique), indexed=False)
+        return
+
+    # ── 2: Bulk-index into OpenSearch ─────────────────────────────────────────
+    console.print(f"\n  Indexing into OpenSearch at [cyan]{os_url}[/]…", end="", flush=True)
+    try:
+        indexed, errors = bulk_index(batch, os_url=os_url)
+    except IndexError as exc:
+        console.print()
+        err_console.print(f"[red]✗ Indexing failed:[/] {exc}")
+        console.print("\n  [yellow]Events were normalised but not indexed.[/]")
+        console.print("  Start OpenSearch:  [cyan]dv siem up[/]")
+        _print_capture_summary(technique, dataset_label, len(batch), index_name_for(technique), indexed=False)
+        raise SystemExit(1)
+
+    console.print(f" [green]✓[/]")
+    if errors:
+        err_console.print(f"  [yellow]⚠ {len(errors)} document(s) failed to index[/]")
+
+    _print_capture_summary(technique, dataset_label, indexed, index_name_for(technique), indexed=True)
+
+
+def _print_capture_summary(
+    technique: str,
+    dataset: str,
+    event_count: int,
+    index: str,
+    *,
+    indexed: bool,
+) -> None:
+    from rich.table import Table as _Table
+
+    tbl = _Table(show_header=False, box=None, padding=(0, 2))
+    tbl.add_column("Field", style="dim")
+    tbl.add_column("Value", style="bold")
+
+    tbl.add_row("Technique", technique)
+    tbl.add_row("Dataset", dataset)
+    tbl.add_row("Events", f"{event_count:,}")
+    tbl.add_row("Index", index)
+    tbl.add_row("Indexed", "[green]yes[/]" if indexed else "[yellow]no (run dv siem up first)[/]")
+
+    console.print()
+    console.print("[bold]Capture summary[/]")
+    console.print(tbl)
+
+    if indexed:
+        console.print(
+            f"\n  [dim]Run:[/] [cyan]dv validate examples/detections/sigma/ "
+            f"--since 0 --index {index}[/]"
+        )
+
+
+@telemetry.command("sources")
+def telemetry_sources() -> None:
+    """List registered telemetry sources."""
+    from detection_validator.telemetry.base import registry
+
+    names = registry.list_sources()
+    if not names:
+        console.print("[dim]No sources registered.[/]")
+        return
+
+    from rich.table import Table as _Table
+    tbl = _Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+    tbl.add_column("Name", style="bold")
+    tbl.add_column("Fidelity", style="cyan")
+    tbl.add_column("Platforms")
+
+    for name in names:
+        src = registry.get(name)
+        desc = src.describe()
+        tbl.add_row(name, desc.fidelity, ", ".join(desc.supported_platforms))
+
+    console.print(tbl)
+
+
 if __name__ == "__main__":
     main()
