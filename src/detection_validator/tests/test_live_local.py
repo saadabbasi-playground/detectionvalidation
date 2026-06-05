@@ -497,18 +497,18 @@ class TestIndexerFidelity:
     def test_replay_index_name(self):
         from detection_validator.telemetry.indexer import index_name_for
 
-        assert index_name_for("T1059.004") == "telemetry-replay-t1059-004"
-        assert index_name_for("T1059.004", "replay") == "telemetry-replay-t1059-004"
+        assert index_name_for("T1059.004") == "dv-telemetry-replay-t1059-004"
+        assert index_name_for("T1059.004", "replay") == "dv-telemetry-replay-t1059-004"
 
     def test_live_index_name(self):
         from detection_validator.telemetry.indexer import index_name_for
 
-        assert index_name_for("T1059.004", "live") == "telemetry-live-t1059-004"
+        assert index_name_for("T1059.004", "live") == "dv-telemetry-live-t1059-004"
 
     def test_dots_replaced(self):
         from detection_validator.telemetry.indexer import index_name_for
 
-        assert index_name_for("T1003.001", "live") == "telemetry-live-t1003-001"
+        assert index_name_for("T1003.001", "live") == "dv-telemetry-live-t1003-001"
 
 
 # ── Registry integration ──────────────────────────────────────────────────────

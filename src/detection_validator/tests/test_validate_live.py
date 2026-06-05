@@ -234,7 +234,7 @@ class TestRunOsQuery:
         }
         with self._mock_urlopen(body):
             total, samples = _run_os_query(
-                "telemetry-replay-t1003-001",
+                "dv-telemetry-replay-t1003-001",
                 {"term": {"technique_id": "T1003.001"}},
                 "http://localhost:9200",
             )
@@ -311,7 +311,7 @@ class TestValidatedRecall:
 
     def test_index_name_correct(self, tmp_path):
         result = self._run(_LSASS_SIGMA, hit_count=3, tmp_path=tmp_path)
-        assert result.technique_results[0].index == "telemetry-replay-t1003-001"
+        assert result.technique_results[0].index == "dv-telemetry-replay-t1003-001"
 
     def test_sample_events_present(self, tmp_path):
         result = self._run(_LSASS_SIGMA, hit_count=3, tmp_path=tmp_path)
@@ -393,7 +393,7 @@ class TestNotValidatable:
     def test_index_still_set(self, tmp_path):
         result = self._run("no data", tmp_path)
         # Index name is always computed, even when verdict is NOT_VALIDATABLE
-        assert result.technique_results[0].index == "telemetry-replay-t1003-001"
+        assert result.technique_results[0].index == "dv-telemetry-replay-t1003-001"
 
 
 # ── validate_live — rule with no techniques ───────────────────────────────────

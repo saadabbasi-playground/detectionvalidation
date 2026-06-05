@@ -18,8 +18,8 @@ NOT_VALIDATABLE   source.ensure() could not produce telemetry (reason included)
 
 Workflow (per technique declared in the rule):
   1. source.ensure(technique_id, platform) → TelemetryBatch  |  raise NotAvailable
-  2. bulk_index(batch) → events in telemetry-replay-{technique}
-  3. Translate Sigma rule → OpenSearch query  (via engine._sigma_detection_to_os_query)
+  2. bulk_index(batch) → events in dv-telemetry-replay-{technique}
+  3. Translate Sigma rule → OpenSearch query  (via engine._pysigma_to_lucene)
   4. Execute against the replay index; count hits
   5. Emit verdict + Lucene query string + Dashboards URL for human eyeballing
 """
@@ -59,7 +59,7 @@ class TechniqueResult:
     verdict: RecallVerdict = RecallVerdict.NOT_VALIDATABLE
     event_count: int = 0            # events indexed from ensure()
     match_count: int = 0            # OpenSearch query hits
-    index: str = ""                 # telemetry-replay-{technique}
+    index: str = ""                 # dv-telemetry-replay-{technique}
     lucene_query: str | None = None # human-readable Lucene string for Dashboards
     not_available_reason: str | None = None
     sample_events: list[dict] = field(default_factory=list)
@@ -195,7 +195,7 @@ def validate_live(
 
     For each technique:
       1. Call ``source.ensure(technique_id, platform)``.
-      2. Bulk-index the returned batch into ``telemetry-replay-{technique}``.
+      2. Bulk-index the returned batch into ``dv-telemetry-replay-{technique}``.
       3. Translate the rule's Sigma detection block to an OpenSearch query and
          execute it against the replay index.
       4. Produce a :class:`TechniqueResult` with a :class:`RecallVerdict`.

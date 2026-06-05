@@ -1,32 +1,59 @@
 """Bulk-index a TelemetryBatch into an OpenSearch index.
 
-The index name follows the convention ``telemetry-replay-{technique}`` where
-the technique ID is lowercased and dots are replaced with hyphens, e.g.
-T1003.001 → telemetry-replay-t1003-001.
+Index naming convention
+-----------------------
+All DetectionValidator indices share the ``dv-telemetry-`` prefix so that the
+wildcard ``dv-telemetry-*`` (AGENT_INDEX_PATTERN) covers:
 
-The caller is responsible for providing the OpenSearch base URL. If the server
-is not reachable this module raises ``IndexError`` with a friendly message so
-the CLI can degrade gracefully rather than showing a traceback.
+  • Date-based indices written by the Vagrant→Vector live pipeline, e.g.
+    ``dv-telemetry-2024.06.01`` (naming controlled by Vector config).
+
+  • Per-technique indices written by the telemetry subsystem, e.g.
+    ``dv-telemetry-replay-t1003-001`` (naming controlled by index_name_for).
+
+This means ``dv validate`` (which queries AGENT_INDEX_PATTERN) sees events
+from both the live attack pipeline and pre-recorded replay captures without
+any additional configuration.
+
+Source field convention
+-----------------------
+Events from the Vagrant victim-agent are tagged with the field
+``source = AGENT_SOURCE_TAG`` ("auditd-agent") by the victim-agent process
+before Vector ships them to OpenSearch.  Code that needs to filter
+agent-originated events (e.g. ``dv attack --watch``) must import
+AGENT_SOURCE_TAG rather than hard-coding the string.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from detection_validator.telemetry.base import TelemetryBatch
 
 
+# ── Canonical constants ───────────────────────────────────────────────────────
+
+# Value of the ``source`` field stamped on events by the victim-agent / Vector.
+AGENT_SOURCE_TAG: str = "auditd-agent"
+
+# Wildcard index pattern that matches all detectval-managed indices, including
+# both Vagrant→Vector date-based indices AND telemetry-subsystem technique indices.
+AGENT_INDEX_PATTERN: str = "dv-telemetry-*"
+
+
 def index_name_for(technique_id: str, fidelity: str = "replay") -> str:
     """Return the OpenSearch index name for a technique and fidelity.
 
+    Convention: all indices produced by the telemetry subsystem are prefixed
+    with ``dv-telemetry-`` so they are covered by AGENT_INDEX_PATTERN.
+
     Examples:
-      T1003.001, "replay" → telemetry-replay-t1003-001
-      T1059.004, "live"   → telemetry-live-t1059-004
+      T1003.001, "replay" → dv-telemetry-replay-t1003-001
+      T1059.004, "live"   → dv-telemetry-live-t1059-004
     """
     tid = technique_id.lower().replace(".", "-")
-    return f"telemetry-{fidelity}-{tid}"
+    return f"dv-telemetry-{fidelity}-{tid}"
 
 
 def _event_to_doc(ev) -> dict:

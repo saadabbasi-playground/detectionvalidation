@@ -214,7 +214,7 @@ class LiveLocalSource(TelemetrySource):
     """Run Atomic Red Team Linux atomics under Sysmon for Linux in a Docker container.
 
     Captures real kernel-level telemetry tagged ``source_fidelity="live"`` and
-    indexed into ``telemetry-live-{technique}`` so it does not collide with
+    indexed into ``dv-telemetry-live-{technique}`` so it does not collide with
     replay data.
 
     Quick start (Linux/WSL2 only)::

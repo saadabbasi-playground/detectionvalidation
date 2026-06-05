@@ -456,10 +456,10 @@ class TestReplaySourceFromOTRF:
 
 class TestIndexNameFor:
     def test_t1003_001(self):
-        assert index_name_for("T1003.001") == "telemetry-replay-t1003-001"
+        assert index_name_for("T1003.001") == "dv-telemetry-replay-t1003-001"
 
     def test_t1059(self):
-        assert index_name_for("T1059") == "telemetry-replay-t1059"
+        assert index_name_for("T1059") == "dv-telemetry-replay-t1059"
 
 
 class TestParseUrl:

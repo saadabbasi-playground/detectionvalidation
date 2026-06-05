@@ -3107,6 +3107,7 @@ def attack(
     if watch:
         import urllib.request
         import urllib.error
+        from detection_validator.telemetry.indexer import AGENT_INDEX_PATTERN, AGENT_SOURCE_TAG
 
         _time.sleep(5)  # let Vector flush
         console.print("\n[bold]Attack events in OpenSearch (last 20):[/]\n")
@@ -3115,7 +3116,7 @@ def attack(
         os_pass = "DetectVal123!"
         query = json.dumps({
             "size": 20,
-            "query": {"term": {"source.keyword": "auditd-agent"}},
+            "query": {"term": {"source.keyword": AGENT_SOURCE_TAG}},
             "_source": ["timestamp", "technique", "key", "exe", "uid", "cmd_output"],
         }).encode()
         try:
@@ -3126,7 +3127,7 @@ def attack(
             ctx.verify_mode = ssl.CERT_NONE
             creds = base64.b64encode(f"{os_user}:{os_pass}".encode()).decode()
             req = urllib.request.Request(
-                f"{os_url}/dv-telemetry-*/_search",
+                f"{os_url}/{AGENT_INDEX_PATTERN}/_search",
                 data=query,
                 headers={"Content-Type": "application/json", "Authorization": f"Basic {creds}"},
             )
@@ -3134,7 +3135,7 @@ def attack(
                 data = json.loads(resp.read())
             hits = data.get("hits", {}).get("hits", [])
             if not hits:
-                console.print("  [yellow]No auditd-agent events yet — Vector may still be flushing.[/]")
+                console.print(f"  [yellow]No {AGENT_SOURCE_TAG} events yet — Vector may still be flushing.[/]")
             for h in hits:
                 s = h["_source"]
                 out = s.get("cmd_output", "")[:100].replace("\n", " ")
