@@ -243,8 +243,12 @@ def validate_live(
         )
         return result
 
+    # Determine fidelity once — the source's declared fidelity is fixed regardless
+    # of whether ensure() succeeds, so we can compute the expected index name upfront.
+    source_fidelity = source.describe().fidelity
+
     for tid in technique_ids:
-        idx = index_name_for(tid)
+        idx = index_name_for(tid, source_fidelity)
         tech_result = TechniqueResult(technique_id=tid, index=idx, lucene_query=lucene_str)
 
         # ── Step 1: ensure telemetry ──────────────────────────────────────────
@@ -258,7 +262,7 @@ def validate_live(
 
         tech_result.event_count = len(batch)
 
-        # ── Step 2: index into replay index ───────────────────────────────────
+        # ── Step 2: index into replay or live index ───────────────────────────
         try:
             indexed, _ = bulk_index(batch, os_url=os_url)
         except IndexError as exc:

@@ -161,30 +161,12 @@ class SourceRegistry:
 # (replay.py imports from this file).
 
 
-class LiveLocalSource(TelemetrySource):
-    """Stub live-capture source — hooks into a local capture agent.
-
-    Implementation is deferred; currently only declares capabilities.
-    Call ``ensure()`` to receive ``NotAvailable`` until the agent is wired in.
-    """
-
-    def describe(self) -> SourceDescription:
-        return SourceDescription(
-            name="live-local",
-            fidelity="live",
-            supported_platforms=["linux"],
-        )
-
-    def ensure(self, technique_id: str, platform: str) -> TelemetryBatch:
-        raise NotAvailable(
-            f"LiveLocalSource capture agent is not running "
-            f"(technique={technique_id}, platform={platform})"
-        )
-
-
-# ── Real ReplaySource (import deferred to avoid circular dependency) ──────────
+# ── Real implementations (imports deferred to avoid circular dependency) ──────
+# LiveLocalSource and ReplaySource both import from this module, so they must
+# be imported AFTER all class definitions above.
 
 from detection_validator.telemetry.replay import ReplaySource  # noqa: E402
+from detection_validator.telemetry.live_local import LiveLocalSource  # noqa: E402
 
 
 # ── Default global registry ───────────────────────────────────────────────────

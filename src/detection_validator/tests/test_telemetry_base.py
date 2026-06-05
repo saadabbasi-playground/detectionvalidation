@@ -360,15 +360,17 @@ class TestLiveLocalSource:
         with pytest.raises(NotAvailable):
             self.src.ensure("T1059", "linux")
 
-    def test_ensure_reason_mentions_technique(self):
+    def test_ensure_reason_mentions_replay_fallback(self):
+        # On any platform the reason must point the user toward --source replay.
         with pytest.raises(NotAvailable) as exc_info:
             self.src.ensure("T1546", "linux")
-        assert "T1546" in exc_info.value.reason
+        assert "replay" in exc_info.value.reason
 
     def test_ensure_reason_mentions_platform(self):
+        # Windows platform is rejected before any eBPF/Docker probe.
         with pytest.raises(NotAvailable) as exc_info:
             self.src.ensure("T1059", "windows")
-        assert "windows" in exc_info.value.reason
+        assert "Windows" in exc_info.value.reason
 
 
 # ── Global registry ───────────────────────────────────────────────────────────

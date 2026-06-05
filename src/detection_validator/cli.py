@@ -3453,13 +3453,15 @@ def telemetry() -> None:
 @click.option("--source", "source_name", default="replay", show_default=True,
               help="Telemetry source name from the registry (dv telemetry sources).")
 @click.option("--platform", default="windows", show_default=True,
-              help="Target platform for OTRF dataset search.")
+              help="Target platform passed to the source (use 'linux' with --source live-local).")
 @click.option("--file", "file_path", default=None, type=click.Path(exists=True),
               help="Load events from a local JSON/JSONL file instead of OTRF.")
 @click.option("--os-url", default="http://localhost:9200", show_default=True,
               help="OpenSearch base URL for bulk indexing.")
 @click.option("--no-index", is_flag=True, default=False,
               help="Skip OpenSearch indexing; only normalise and print summary.")
+@click.option("--i-understand", "i_understand", is_flag=True, default=False,
+              help="Allow destructive atomics (elevation required or system modification).")
 def telemetry_capture(
     technique: str,
     source_name: str,
@@ -3467,6 +3469,7 @@ def telemetry_capture(
     file_path: str | None,
     os_url: str,
     no_index: bool,
+    i_understand: bool,
 ) -> None:
     """Fetch a pre-recorded OTRF dataset and index it into OpenSearch.
 
@@ -3488,10 +3491,15 @@ def telemetry_capture(
     from detection_validator.telemetry.replay import ReplaySource
     from detection_validator.telemetry.indexer import bulk_index, index_name_for
 
-    # Build the source — user-supplied file overrides the registry lookup
+    # Build the source — user-supplied file overrides the registry lookup.
+    # live-local is constructed fresh (not from registry) so --i-understand is wired in.
     if file_path:
         source = ReplaySource(file_path=file_path)
         source_label = f"file:{Path(file_path).name}"
+    elif source_name == "live-local":
+        from detection_validator.telemetry.live_local import LiveLocalSource
+        source = LiveLocalSource(i_understand=i_understand)
+        source_label = "live-local"
     else:
         try:
             source = registry.get(source_name)
@@ -3517,9 +3525,11 @@ def telemetry_capture(
     console.print(f"  [green]✓[/] Dataset   [bold]{dataset_label}[/]")
     console.print(f"  [green]✓[/] Events    [bold]{len(batch):,}[/]  (fidelity={batch.fidelity})")
 
+    capture_index = index_name_for(technique, batch.fidelity)
+
     if no_index:
         console.print("  [dim]Indexing skipped (--no-index)[/]")
-        _print_capture_summary(technique, dataset_label, len(batch), index_name_for(technique), indexed=False)
+        _print_capture_summary(technique, dataset_label, len(batch), capture_index, indexed=False)
         return
 
     # ── 2: Bulk-index into OpenSearch ─────────────────────────────────────────
@@ -3531,14 +3541,14 @@ def telemetry_capture(
         err_console.print(f"[red]✗ Indexing failed:[/] {exc}")
         console.print("\n  [yellow]Events were normalised but not indexed.[/]")
         console.print("  Start OpenSearch:  [cyan]dv siem up[/]")
-        _print_capture_summary(technique, dataset_label, len(batch), index_name_for(technique), indexed=False)
+        _print_capture_summary(technique, dataset_label, len(batch), capture_index, indexed=False)
         raise SystemExit(1)
 
     console.print(f" [green]✓[/]")
     if errors:
         err_console.print(f"  [yellow]⚠ {len(errors)} document(s) failed to index[/]")
 
-    _print_capture_summary(technique, dataset_label, indexed, index_name_for(technique), indexed=True)
+    _print_capture_summary(technique, dataset_label, indexed, capture_index, indexed=True)
 
 
 def _print_capture_summary(
@@ -3601,6 +3611,8 @@ def telemetry_sources() -> None:
               help="Rule UUID (scanned from --rules-dir) or path to a Sigma YAML file.")
 @click.option("--source", "source_name", default="replay", show_default=True,
               help="Telemetry source: replay or live-local.")
+@click.option("--i-understand", "i_understand", is_flag=True, default=False,
+              help="Allow destructive atomics when using --source live-local.")
 @click.option("--platform", default="windows", show_default=True,
               help="Target platform passed to source.ensure().")
 @click.option("--rules-dir", default="examples/detections/sigma", show_default=True,
@@ -3612,6 +3624,7 @@ def telemetry_sources() -> None:
 def validate_live_cmd(
     rule_id: str,
     source_name: str,
+    i_understand: bool,
     platform: str,
     rules_dir: str,
     os_url: str,
@@ -3659,9 +3672,14 @@ def validate_live_cmd(
         raise SystemExit(1)
 
     # ── 2: Build source ───────────────────────────────────────────────────────
+    # live-local is constructed fresh so --i-understand is wired in properly.
     if file_path:
         source = ReplaySource(file_path=file_path)
         source_label = f"file:{Path(file_path).name}"
+    elif source_name == "live-local":
+        from detection_validator.telemetry.live_local import LiveLocalSource
+        source = LiveLocalSource(i_understand=i_understand)
+        source_label = "live-local"
     else:
         try:
             source = tel_registry.get(source_name)

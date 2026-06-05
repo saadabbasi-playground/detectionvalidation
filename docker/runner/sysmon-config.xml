@@ -1,0 +1,31 @@
+<Sysmon schemaversion="4.82">
+  <!--
+    Minimal Sysmon for Linux config — captures the event types that matter for
+    detection validation without flooding the log with noise.
+
+    EventID 1  – ProcessCreate
+    EventID 3  – NetworkConnect
+    EventID 5  – ProcessTerminate
+    EventID 11 – FileCreate
+    EventID 23 – FileDelete
+  -->
+  <EventFiltering>
+    <RuleGroup name="" groupRelation="or">
+      <ProcessCreate onmatch="include">
+        <Rule groupRelation="or"/>
+      </ProcessCreate>
+      <NetworkConnect onmatch="include">
+        <Rule groupRelation="or"/>
+      </NetworkConnect>
+      <ProcessTerminate onmatch="include">
+        <Rule groupRelation="or"/>
+      </ProcessTerminate>
+      <FileCreate onmatch="include">
+        <Rule groupRelation="or"/>
+      </FileCreate>
+      <FileDelete onmatch="include">
+        <Rule groupRelation="or"/>
+      </FileDelete>
+    </RuleGroup>
+  </EventFiltering>
+</Sysmon>

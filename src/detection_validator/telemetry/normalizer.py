@@ -94,10 +94,15 @@ def _to_int(val: Any) -> int | None:
         return None
 
 
-def normalize_otrf_event(raw: dict, technique_id: str) -> TelemetryEvent:
-    """Map one OTRF event dict to a TelemetryEvent.
+def normalize_otrf_event(
+    raw: dict,
+    technique_id: str,
+    fidelity: str = "replay",
+) -> TelemetryEvent:
+    """Map one OTRF or Sysmon-for-Linux event dict to a TelemetryEvent.
 
     Unknown fields survive in ``extra`` so no information is discarded.
+    Pass fidelity="live" for events captured by LiveLocalSource.
     """
     flat = _flatten(raw)
 
@@ -123,7 +128,7 @@ def normalize_otrf_event(raw: dict, technique_id: str) -> TelemetryEvent:
 
     return TelemetryEvent(
         technique_id=technique_id,
-        source_fidelity="replay",
+        source_fidelity=fidelity,  # type: ignore[arg-type]
         timestamp=ts,
         Image=str(image) if image is not None else None,
         CommandLine=str(cmd) if cmd is not None else None,
@@ -138,10 +143,14 @@ def normalize_otrf_event(raw: dict, technique_id: str) -> TelemetryEvent:
     )
 
 
-def normalize_events(raw_events: list[dict], technique_id: str) -> list[TelemetryEvent]:
-    """Normalise a list of raw OTRF event dicts. Skips non-dict entries silently."""
+def normalize_events(
+    raw_events: list[dict],
+    technique_id: str,
+    fidelity: str = "replay",
+) -> list[TelemetryEvent]:
+    """Normalise a list of raw event dicts. Skips non-dict entries silently."""
     return [
-        normalize_otrf_event(e, technique_id)
+        normalize_otrf_event(e, technique_id, fidelity=fidelity)
         for e in raw_events
         if isinstance(e, dict)
     ]

@@ -18,8 +18,15 @@ if TYPE_CHECKING:
     from detection_validator.telemetry.base import TelemetryBatch
 
 
-def index_name_for(technique_id: str) -> str:
-    return f"telemetry-replay-{technique_id.lower().replace('.', '-')}"
+def index_name_for(technique_id: str, fidelity: str = "replay") -> str:
+    """Return the OpenSearch index name for a technique and fidelity.
+
+    Examples:
+      T1003.001, "replay" → telemetry-replay-t1003-001
+      T1059.004, "live"   → telemetry-live-t1059-004
+    """
+    tid = technique_id.lower().replace(".", "-")
+    return f"telemetry-{fidelity}-{tid}"
 
 
 def _event_to_doc(ev) -> dict:
@@ -77,7 +84,7 @@ def bulk_index(batch: "TelemetryBatch", os_url: str = "http://localhost:9200") -
             "  Start the local stack: dv siem up"
         ) from exc
 
-    idx = index_name_for(batch.technique_id)
+    idx = index_name_for(batch.technique_id, batch.fidelity)
 
     # Create index with a single shard if it doesn't exist
     if not client.indices.exists(index=idx):
