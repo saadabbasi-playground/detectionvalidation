@@ -455,6 +455,50 @@ dv badge -d enriched.jsonl -o coverage.svg  # SVG badge
 
 ---
 
+## Optional: local OpenSearch
+
+> **Not required** for `dv lint`, `dv gaps`, `dv match`, `dv query`, or any offline analysis.
+> Only needed if you want a live SIEM to validate rules against real telemetry without the full Vagrant lab.
+
+**Prerequisites:** Docker Desktop ≥ 24 with **~2 GB RAM** available to Docker.
+
+This starts a minimal single-node OpenSearch 2.19.5 + Dashboards stack with security and TLS
+disabled — suitable for local development only.
+
+```bash
+dv siem up          # pull images (first run) and start containers
+dv siem status      # confirm API and index counts
+dv siem down        # stop (data volume preserved)
+dv siem down --volumes   # stop + delete all indexed data
+```
+
+Once running:
+
+| Endpoint | URL |
+|---|---|
+| OpenSearch REST API | http://localhost:9200 |
+| OpenSearch Dashboards | http://localhost:5601 |
+
+No username or password required — security is disabled for local dev.
+
+To send detection telemetry to this instance and run `dv validate` against it:
+
+```bash
+# Export events from the Vagrant VM into the local OpenSearch
+vagrant ssh -c "sudo cat /var/log/audit/audit-events.jsonl" \
+  | while IFS= read -r line; do
+      curl -s -X POST http://localhost:9200/dv-telemetry-$(date +%Y.%m.%d)/_doc \
+        -H 'Content-Type: application/json' -d "$line" > /dev/null
+    done
+
+# Now validate rules against the local instance
+dv validate examples/detections/sigma/ --siem opensearch
+```
+
+The compose file lives at `docker/opensearch/docker-compose.yml` if you want to manage it directly with `docker compose`.
+
+---
+
 ## CVE coverage analysis
 
 This workflow answers: *"Do I have detections for the techniques an attacker would use to exploit this CVE?"*

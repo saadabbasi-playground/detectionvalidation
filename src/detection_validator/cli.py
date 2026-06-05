@@ -115,6 +115,57 @@ def _render_results(
         err_console.print(f"\n[green]✓[/] Updated detections written to [bold]{output}[/]")
 
 
+# ── Local docker-compose helpers ──────────────────────────────────────────────
+
+def _local_compose_file() -> Path:
+    """Return the path to docker/opensearch/docker-compose.yml in the repo."""
+    return Path(__file__).parents[2] / "docker" / "opensearch" / "docker-compose.yml"
+
+
+def _docker_check() -> str | None:
+    """Return a friendly error string if Docker isn't usable, else None."""
+    import subprocess as _sp
+    try:
+        r = _sp.run(["docker", "info"], capture_output=True, text=True, timeout=8)
+        if r.returncode == 0:
+            return None
+        return (
+            "Docker daemon is not running — start Docker Desktop and try again.\n"
+            "  Install: https://docs.docker.com/get-started/get-docker/"
+        )
+    except FileNotFoundError:
+        return (
+            "Docker is not installed.\n"
+            "  Install Docker Desktop: https://docs.docker.com/get-started/get-docker/"
+        )
+    except Exception as exc:
+        return f"Docker check failed: {exc}"
+
+
+def _docker_compose_run(args: list[str], timeout: int = 120) -> tuple[int, str]:
+    """Shell out to 'docker compose' (plugin) or 'docker-compose' (legacy).
+
+    Returns (returncode, combined stdout+stderr).
+    """
+    import subprocess as _sp
+    compose = str(_local_compose_file())
+    for prefix in (["docker", "compose"], ["docker-compose"]):
+        try:
+            r = _sp.run(
+                prefix + ["-f", compose] + args,
+                capture_output=True, text=True, timeout=timeout,
+            )
+            return r.returncode, (r.stdout + r.stderr).strip()
+        except FileNotFoundError:
+            continue
+        except _sp.TimeoutExpired:
+            return 1, "docker compose timed out"
+    return 127, (
+        "docker compose not found — install Docker Desktop "
+        "(https://docs.docker.com/get-started/get-docker/)"
+    )
+
+
 # ── SIEM registry helpers ──────────────────────────────────────────────────────
 
 def _registry_path() -> Path:
@@ -1091,7 +1142,10 @@ def siem() -> None:
 @click.option("--type", "siem_type", default="opensearch", show_default=True,
               type=click.Choice(["opensearch", "splunk"]))
 def siem_status(siem_type: str) -> None:
-    """Check connectivity to a SIEM backend and report index stats.
+    """Check local container state and SIEM HTTP connectivity.
+
+    Shows docker-compose container status for the local stack (if Docker is
+    available), then confirms OpenSearch/Splunk is accepting connections.
 
     \b
     Examples:
@@ -1105,36 +1159,65 @@ def siem_status(siem_type: str) -> None:
     import urllib.error
     import urllib.request
 
+    # ── Local docker container state (informational, never fatal) ─────────────
+    if siem_type == "opensearch" and _docker_check() is None and _local_compose_file().exists():
+        rc, out = _docker_compose_run(["ps", "--format", "table"])
+        if rc == 0 and out.strip():
+            console.print("[bold]Local containers:[/]")
+            for line in out.splitlines():
+                console.print(f"  {line}")
+            console.print()
+
     if siem_type == "opensearch":
-        os_pass = _os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "")
-        if not os_pass:
-            err_console.print("[yellow]⚠ OPENSEARCH_INITIAL_ADMIN_PASSWORD not set — auth may fail[/]")
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode()
-        headers = {"Authorization": f"Basic {creds}"}
-        base = "https://localhost:9200"
+        # Try local no-auth stack first (dv siem up), then fall back to auth'd stack
+        _local_ok = False
         try:
-            req = urllib.request.Request(base, headers=headers)
-            with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
+            with urllib.request.urlopen("http://localhost:9200", timeout=3) as resp:
                 info = _json.loads(resp.read())
             version = info.get("version", {}).get("number", "?")
-            console.print(f"[green]✓[/] OpenSearch [bold]{version}[/]  at {base}")
-        except urllib.error.HTTPError as exc:
-            if exc.code in (401, 403):
-                err_console.print(f"[yellow]⚠[/] OpenSearch reachable but auth failed (HTTP {exc.code}) — check OPENSEARCH_INITIAL_ADMIN_PASSWORD")
-            else:
-                err_console.print(f"[red]✗[/] OpenSearch HTTP {exc.code}")
-            return
-        except Exception as exc:
-            err_console.print(f"[red]✗[/] OpenSearch not reachable: {exc}")
-            return
+            console.print(f"[green]✓[/] OpenSearch [bold]{version}[/]  at http://localhost:9200 [dim](local, no-auth)[/]")
+            _local_ok = True
+        except Exception:
+            pass
 
+        if not _local_ok:
+            os_pass = _os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "")
+            if not os_pass:
+                err_console.print("[yellow]⚠ OPENSEARCH_INITIAL_ADMIN_PASSWORD not set — auth may fail[/]")
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode()
+            headers = {"Authorization": f"Basic {creds}"}
+            base = "https://localhost:9200"
+            try:
+                req = urllib.request.Request(base, headers=headers)
+                with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
+                    info = _json.loads(resp.read())
+                version = info.get("version", {}).get("number", "?")
+                console.print(f"[green]✓[/] OpenSearch [bold]{version}[/]  at {base}")
+            except urllib.error.HTTPError as exc:
+                if exc.code in (401, 403):
+                    err_console.print(f"[yellow]⚠[/] OpenSearch reachable but auth failed (HTTP {exc.code}) — check OPENSEARCH_INITIAL_ADMIN_PASSWORD")
+                else:
+                    err_console.print(f"[red]✗[/] OpenSearch HTTP {exc.code}")
+                return
+            except Exception as exc:
+                err_console.print(f"[red]✗[/] OpenSearch not reachable: {exc}")
+                err_console.print(
+                    "  Start the local stack: [cyan]dv siem up[/]\n"
+                    "  Or start the full lab: [cyan]./dv up lab --siem opensearch[/]"
+                )
+                return
+
+        # Index counts — works for both local (no-auth HTTP) and lab (auth HTTPS)
+        _idx_base = "http://localhost:9200" if _local_ok else base
+        _idx_hdrs: dict = {} if _local_ok else headers
+        _idx_ctx = None if _local_ok else ctx
         for index in ("dv-telemetry-*", ".opendistro-alerting-alert*"):
             try:
-                req2 = urllib.request.Request(f"{base}/{index}/_count", headers=headers)
-                with urllib.request.urlopen(req2, context=ctx, timeout=5) as resp2:
+                req2 = urllib.request.Request(f"{_idx_base}/{index}/_count", headers=_idx_hdrs)
+                with urllib.request.urlopen(req2, context=_idx_ctx, timeout=5) as resp2:
                     n = _json.loads(resp2.read()).get("count", 0)
                 console.print(f"  [cyan]{index}[/]: {n:,} documents")
             except Exception:
@@ -1397,6 +1480,113 @@ def siem_list() -> None:
             auth, e.get("index", "dv-telemetry-*"),
         )
     console.print(tbl)
+
+
+@siem.command("up")
+@click.option("--wait/--no-wait", default=True, show_default=True,
+              help="Poll until OpenSearch is healthy before returning (up to 90s).")
+def siem_up(wait: bool) -> None:
+    """Start the local single-node OpenSearch + Dashboards stack.
+
+    Uses docker/opensearch/docker-compose.yml.  Security and TLS are disabled
+    — for local development only.  Requires Docker Desktop with ~2 GB RAM.
+
+    \b
+    Once running:
+      OpenSearch API   http://localhost:9200
+      Dashboards UI    http://localhost:5601
+
+    \b
+    Examples:
+      dv siem up
+      dv siem up --no-wait   # return immediately without polling
+    """
+    import time as _time
+    import urllib.request as _req
+
+    docker_err = _docker_check()
+    if docker_err:
+        err_console.print(f"[red]✗[/] {docker_err}")
+        raise SystemExit(1)
+
+    compose = _local_compose_file()
+    if not compose.exists():
+        err_console.print(f"[red]✗[/] Compose file not found: {compose}")
+        raise SystemExit(1)
+
+    console.print("[cyan]Starting local OpenSearch stack…[/]  (this may take 30–60 s on first run)")
+    rc, out = _docker_compose_run(["up", "-d", "--remove-orphans"])
+    if rc != 0:
+        err_console.print(f"[red]✗[/] docker compose up failed:\n{out}")
+        raise SystemExit(1)
+
+    console.print("[green]✓[/] Containers started")
+
+    if wait:
+        console.print("  Waiting for OpenSearch to be healthy…", end="", flush=True)
+        deadline = _time.time() + 90
+        ready = False
+        while _time.time() < deadline:
+            try:
+                with _req.urlopen("http://localhost:9200/_cluster/health", timeout=2) as resp:
+                    import json as _j
+                    h = _j.loads(resp.read())
+                    if h.get("status") in ("green", "yellow"):
+                        ready = True
+                        break
+            except Exception:
+                pass
+            _time.sleep(3)
+            console.print(".", end="", flush=True)
+        console.print()
+        if not ready:
+            err_console.print(
+                "[yellow]⚠ OpenSearch did not become healthy within 90 s.[/]\n"
+                "  Check logs: [cyan]docker compose -f docker/opensearch/docker-compose.yml logs[/]"
+            )
+            return
+
+    console.print(
+        "\n[bold green]✓ Local OpenSearch is up.[/]\n"
+        "  OpenSearch API   [cyan]http://localhost:9200[/]\n"
+        "  Dashboards UI    [cyan]http://localhost:5601[/]\n\n"
+        "  [dim]dv siem status[/]   — confirm connectivity and index counts\n"
+        "  [dim]dv siem down[/]     — stop the stack (data volume preserved)\n"
+        "  [dim]dv validate ...[/]  — run detection analysis against live OpenSearch"
+    )
+
+
+@siem.command("down")
+@click.option("--volumes", is_flag=True, default=False,
+              help="Also remove the named data volume (destroys all indexed data).")
+def siem_down(volumes: bool) -> None:
+    """Stop the local OpenSearch + Dashboards stack.
+
+    Data is preserved in the named Docker volume unless --volumes is passed.
+
+    \b
+    Examples:
+      dv siem down              # stop, keep data
+      dv siem down --volumes    # stop + delete all indexed data
+    """
+    docker_err = _docker_check()
+    if docker_err:
+        err_console.print(f"[red]✗[/] {docker_err}")
+        raise SystemExit(1)
+
+    args = ["down"]
+    if volumes:
+        args.append("--volumes")
+        console.print("[yellow]⚠ --volumes: all indexed data will be deleted.[/]")
+
+    console.print("[cyan]Stopping local OpenSearch stack…[/]")
+    rc, out = _docker_compose_run(args)
+    if rc != 0:
+        err_console.print(f"[red]✗[/] docker compose down failed:\n{out}")
+        raise SystemExit(1)
+
+    vol_note = " (data volume removed)" if volumes else " (data volume preserved)"
+    console.print(f"[green]✓[/] Stack stopped{vol_note}")
 
 
 @siem.command("attach")
