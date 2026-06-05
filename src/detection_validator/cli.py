@@ -3017,6 +3017,172 @@ def lint_cmd(rules: str, min_score: int, export_md: str | None) -> None:
         err_console.print(f"[green]✓[/] Markdown report written to [bold]{export_md}[/]")
 
 
+@main.command("gaps")
+@click.option("--detections", "-d", required=True, type=click.Path(exists=True),
+              help="JSONL file of CanonicalDetection objects (from dv ingest/map).")
+@click.option("--prioritize", is_flag=True, default=False,
+              help="Sort by composite priority score and show why each gap ranks high.")
+@click.option("--top-n", default=0, show_default=True,
+              help="Limit output to the top N gaps (0 = all).")
+@click.option("--tactic", default=None, metavar="TACTIC[,TACTIC...]",
+              help="Filter to specific tactic(s), e.g. initial-access,execution.")
+@click.option("--no-subtechniques", is_flag=True, default=False,
+              help="Only show base techniques, not sub-techniques.")
+@click.option("--format", "fmt", default="cli", show_default=True,
+              type=click.Choice(["cli", "json"]))
+def gaps_cmd(
+    detections: str, prioritize: bool, top_n: int,
+    tactic: str | None, no_subtechniques: bool, fmt: str,
+) -> None:
+    """Identify ATT&CK technique gaps not covered by the detection corpus.
+
+    Uses only locally cached STIX data — no network, no API keys needed.
+    Run 'dv intel update --source attack' first if the cache is empty.
+
+    \b
+    Priority score (--prioritize) is a 0–100 composite of:
+      • Prevalence (0–40 pts): groups + software using the technique in STIX
+      • Tactic weight (0–40 pts): Initial Access / Execution / Impact rank highest
+      • Parent severity (0–20 pts): for uncovered sub-techniques whose parent IS
+        covered — the max severity of the covering rules adds urgency
+
+    \b
+    Examples:
+      dv gaps -d mapped.jsonl
+      dv gaps -d mapped.jsonl --prioritize
+      dv gaps -d mapped.jsonl --prioritize --top-n 20
+      dv gaps -d mapped.jsonl --prioritize --tactic initial-access,execution
+      dv gaps -d mapped.jsonl --prioritize --format json
+    """
+    import json as _json
+    from detection_validator.normalizer.schema import CanonicalDetection
+    from detection_validator.mappers.attack_mapper import AttackKnowledgeBase, _DEFAULT_CACHE_DIR
+    from detection_validator.coverage.gap_analyzer import GapAnalyzer
+    from rich.table import Table
+    from rich import box as _box
+
+    # ── Load corpus ───────────────────────────────────────────────────────────
+    corpus: list[CanonicalDetection] = []
+    with open(detections, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                corpus.append(CanonicalDetection.model_validate_json(line))
+            except Exception:
+                continue
+
+    if not corpus:
+        err_console.print("[red]No valid detections found in the file.[/]")
+        raise SystemExit(1)
+
+    # ── Load ATT&CK KB from local STIX cache ─────────────────────────────────
+    kb = AttackKnowledgeBase(cache_dir=_DEFAULT_CACHE_DIR)
+    if not kb._bundle_path.exists():
+        err_console.print(
+            "[red]ATT&CK STIX cache is missing.[/]  "
+            "Run: [cyan]dv intel update --source attack[/]"
+        )
+        raise SystemExit(1)
+    if not kb._is_cache_valid():
+        err_console.print(
+            "[yellow]⚠ ATT&CK cache is stale (>7 days). "
+            "Run [cyan]dv intel update --source attack[/yellow] to refresh."
+        )
+    kb.ensure_loaded()
+
+    # ── Run gap analysis ──────────────────────────────────────────────────────
+    analyzer = GapAnalyzer(kb)
+    include_sub = not no_subtechniques
+    all_gaps = analyzer.analyze(corpus, include_subtechniques=include_sub)
+
+    # Tactic filter
+    filter_tactics: set[str] | None = None
+    if tactic:
+        filter_tactics = {t.strip().lower() for t in tactic.split(",")}
+        all_gaps = [g for g in all_gaps if g.tactic in filter_tactics]
+
+    # Top-n
+    shown = all_gaps[:top_n] if top_n > 0 else all_gaps
+
+    # ── JSON output ───────────────────────────────────────────────────────────
+    if fmt == "json":
+        payload = [
+            {
+                "technique_id": g.technique_id,
+                "name": g.name,
+                "tactic": g.tactic,
+                "score": g.score,
+                "prevalence": g.prevalence,
+                "tactic_weight": g.tactic_weight,
+                "parent_id": g.parent_id,
+                "parent_covered": g.parent_covered,
+                "parent_max_severity": g.parent_max_severity,
+                "reasons": g.reasons,
+            }
+            for g in shown
+        ]
+        console.print_json(_json.dumps(payload, indent=2))
+        return
+
+    # ── CLI table ─────────────────────────────────────────────────────────────
+    tbl = Table(
+        show_header=True, header_style="bold",
+        box=_box.SIMPLE, padding=(0, 1),
+    )
+    tbl.add_column("Technique", style="white", min_width=10)
+    tbl.add_column("Name", max_width=36)
+    tbl.add_column("Tactic", style="cyan", max_width=22)
+    if prioritize:
+        tbl.add_column("Score", width=6, justify="right")
+        tbl.add_column("Prev.", width=5, justify="right")
+        tbl.add_column("Why", style="dim", max_width=52)
+
+    for g in shown:
+        score_color = (
+            "red" if g.score >= 60 else
+            "yellow" if g.score >= 35 else
+            "dim"
+        )
+        if prioritize:
+            why = " | ".join(g.reasons)
+            tbl.add_row(
+                g.technique_id,
+                g.name[:36],
+                g.tactic,
+                f"[{score_color}]{g.score:.0f}[/]",
+                str(g.prevalence),
+                why[:52],
+            )
+        else:
+            tbl.add_row(g.technique_id, g.name[:36], g.tactic)
+
+    console.print(tbl)
+
+    covered_count = len(kb._techniques) - len(all_gaps) - len([
+        t for t in kb.get_all_techniques(include_subtechniques=include_sub)
+        if t.technique_id not in {g.technique_id for g in all_gaps}
+    ]) + len(corpus)  # rough count
+
+    total_kb = len(kb.get_all_techniques(
+        include_deprecated=False, include_subtechniques=include_sub
+    ))
+    covered_n = total_kb - len(all_gaps)
+
+    mode_label = " [cyan](prioritized)[/]" if prioritize else ""
+    console.print(
+        f"\n[bold]Gap analysis{mode_label}:[/] "
+        f"{len(shown)} gap(s) shown  "
+        f"({covered_n}/{total_kb} techniques covered  "
+        f"{covered_n/total_kb*100:.0f}%)"
+    )
+    if filter_tactics:
+        console.print(f"  [dim]Filtered to tactics: {', '.join(sorted(filter_tactics))}[/]")
+    if top_n and len(all_gaps) > top_n:
+        console.print(f"  [dim](showing top {top_n} of {len(all_gaps)} total gaps)[/]")
+
+
 @main.command("query")
 @click.argument("rule", type=click.Path(exists=True))
 @click.option("--siem", default="opensearch,elastic,splunk", show_default=True,
