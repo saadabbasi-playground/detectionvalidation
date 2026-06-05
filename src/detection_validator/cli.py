@@ -48,22 +48,28 @@ def _render_results(
     tbl.add_column("Source", width=11)
     tbl.add_column("Status", width=8)
 
-    passed = failed = errors = skipped = 0
+    likely_fires = kw_partial = no_kw_match = errors = skipped = 0
     covered_techniques: set[str] = set()
 
-    for r in results:
-        icon, style = {
-            "pass":  ("✓", "green"),
-            "fail":  ("✗", "red"),
-            "error": ("!", "yellow"),
-            "skip":  ("–", "dim"),
-        }.get(r.status, ("?", "white"))
+    _STATUS_DISPLAY: dict[str, tuple[str, str]] = {
+        "likely_fires":     ("✓", "green"),
+        "keyword_partial":  ("~", "yellow"),
+        "no_keyword_match": ("✗", "red"),
+        "error":            ("!", "yellow"),
+        "skip":             ("–", "dim"),
+    }
 
-        if r.status == "pass":
-            passed += 1
+    for r in results:
+        icon, style = _STATUS_DISPLAY.get(r.status, ("?", "white"))
+
+        if r.status == "likely_fires":
+            likely_fires += 1
             covered_techniques.update(r.techniques)
-        elif r.status == "fail":
-            failed += 1
+        elif r.status == "keyword_partial":
+            kw_partial += 1
+            covered_techniques.update(r.techniques)
+        elif r.status == "no_keyword_match":
+            no_kw_match += 1
         elif r.status == "error":
             errors += 1
         else:
@@ -73,7 +79,7 @@ def _render_results(
         hit_str = str(r.hit_count) if r.status not in ("error", "skip") else "-"
         tbl.add_row(r.name[:38], tech_str, hit_str, r.siem, f"[{style}]{icon} {r.status.upper()}[/]")
 
-        if r.status == "pass" and r.sample_events:
+        if r.status in ("likely_fires", "keyword_partial") and r.sample_events:
             ev = r.sample_events[0]
             snippet = (
                 ev.get("proctitle") or ev.get("cmd_output") or
@@ -91,7 +97,9 @@ def _render_results(
     total = len(results)
     console.print(
         f"[bold]Results:[/] {total} rule(s)  "
-        f"[green]{passed} PASS[/]  [red]{failed} FAIL[/]  "
+        f"[green]{likely_fires} LIKELY_FIRES[/]  "
+        f"[yellow]{kw_partial} KEYWORD_PARTIAL[/]  "
+        f"[red]{no_kw_match} NO_KEYWORD_MATCH[/]  "
         f"[yellow]{errors} ERROR[/]  [dim]{skipped} SKIP[/]  "
         f"({elapsed:.1f}s)"
     )
@@ -2900,6 +2908,113 @@ def attack(
         f"  OpenSearch Dashboards: [cyan]http://localhost:5601[/]\n"
         f"  Splunk mock UI:        [cyan]http://localhost:8000[/]"
     )
+
+
+@main.command("lint")
+@click.argument("rules", default=".")
+@click.option("--min-score", default=0, show_default=True,
+              help="Only show rules with quality score below this threshold (0 = show all).")
+@click.option("--export-md", default=None, metavar="FILE",
+              help="Write a Markdown lint report to FILE.")
+def lint_cmd(rules: str, min_score: int, export_md: str | None) -> None:
+    """Static quality analysis of detection rules — no SIEM required.
+
+    Checks each rule for: missing logsource, overly broad wildcards, missing
+    condition, empty detection block, and missing ATT&CK tag.  Produces a
+    0-100 quality score per rule.
+
+    \b
+    Examples:
+      dv lint examples/detections/sigma/
+      dv lint rules/ --min-score 70
+      dv lint rules/ --export-md lint-report.md
+    """
+    from detection_validator.parsers.registry import ParserRegistry
+    from detection_validator.parsers.base import ParseError
+    from detection_validator.validator.static_lint import StaticLinter, LintSeverity
+    from rich.table import Table
+    from rich import box as _box
+    import io
+
+    registry = ParserRegistry()
+    rules_path = Path(rules)
+    if rules_path.is_file():
+        rule_files = [rules_path]
+    else:
+        rule_files = sorted(
+            f for f in rules_path.rglob("*")
+            if f.suffix in (".yml", ".yaml", ".json", ".toml", ".spl", ".kql", ".yar")
+        )
+
+    if not rule_files:
+        err_console.print(f"[red]No rule files found under {rules}[/]")
+        raise SystemExit(1)
+
+    linter = StaticLinter()
+    detections = []
+    parse_errors: list[tuple[str, str]] = []
+
+    for fpath in rule_files:
+        try:
+            det = registry.parse_file(fpath)
+            if det:
+                detections.extend(det if isinstance(det, list) else [det])
+        except (ParseError, Exception) as exc:
+            parse_errors.append((str(fpath), str(exc)))
+
+    if not detections and not parse_errors:
+        console.print("[yellow]No parseable rules found.[/]")
+        return
+
+    lint_results = linter.lint_all(detections)
+
+    tbl = Table(show_header=True, header_style="bold", box=_box.SIMPLE, padding=(0, 1))
+    tbl.add_column("Rule", style="white", max_width=36)
+    tbl.add_column("Score", width=6, justify="right")
+    tbl.add_column("Sev", width=5)
+    tbl.add_column("Code", width=22)
+    tbl.add_column("Finding", style="dim", max_width=48)
+
+    shown = 0
+    md_lines: list[str] = ["# Detection Lint Report\n",
+                            "| Rule | Score | Sev | Code | Finding |",
+                            "|---|---|---|---|---|"]
+
+    for det in detections:
+        findings = lint_results.get(str(det.id), [])
+        score = linter.score(findings)
+        if min_score and score >= min_score:
+            continue
+        shown += 1
+        score_color = "green" if score >= 80 else "yellow" if score >= 50 else "red"
+        if not findings:
+            tbl.add_row(det.name[:36], f"[{score_color}]{score}[/]", "", "", "[dim]OK[/]")
+            md_lines.append(f"| {det.name} | {score} | | | OK |")
+        for f in findings:
+            sev_color = {"error": "red", "warning": "yellow", "info": "dim"}.get(f.severity, "white")
+            tbl.add_row(
+                det.name[:36],
+                f"[{score_color}]{score}[/]",
+                f"[{sev_color}]{f.severity[:4].upper()}[/]",
+                f.code,
+                f.message[:48],
+            )
+            md_lines.append(f"| {det.name} | {score} | {f.severity} | {f.code} | {f.message} |")
+
+    for fpath, err in parse_errors:
+        tbl.add_row(Path(fpath).name[:36], "[dim]N/A[/]", "[red]ERR[/]", "PARSE_ERROR", err[:48])
+        md_lines.append(f"| {Path(fpath).name} | N/A | error | PARSE_ERROR | {err} |")
+
+    console.print(tbl)
+    console.print(
+        f"\n[bold]Linted:[/] {len(detections)} rule(s)  "
+        f"[dim]{len(parse_errors)} parse error(s)[/]  "
+        f"shown={shown or len(detections)}"
+    )
+
+    if export_md:
+        Path(export_md).write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+        err_console.print(f"[green]✓[/] Markdown report written to [bold]{export_md}[/]")
 
 
 if __name__ == "__main__":

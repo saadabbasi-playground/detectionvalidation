@@ -146,12 +146,12 @@ class TestCliReport:
         return buf.getvalue()
 
     def test_pass_shown_in_output(self) -> None:
-        out = self._capture([_r(status="pass")])
-        assert "PASS" in out or "pass" in out.lower()
+        out = self._capture([_r(status="likely_fires")])
+        assert "LIKELY" in out or "likely" in out.lower()
 
     def test_fail_shown_in_output(self) -> None:
-        out = self._capture([_r(status="fail", hits=0)])
-        assert "FAIL" in out or "fail" in out.lower()
+        out = self._capture([_r(status="no_keyword_match", hits=0)])
+        assert "NO_KEYWORD_MATCH" in out or "no keyword match" in out.lower()
 
     def test_error_shown_in_output(self) -> None:
         out = self._capture([_r(status="error", error="timeout", hits=0)])

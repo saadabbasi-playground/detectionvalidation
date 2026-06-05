@@ -22,10 +22,14 @@ class LintFinding:
 
 
 class DetectionLinter:
-    """Static checks: missing MITRE tags, overly broad queries, deprecated fields, etc."""
+    """Base class for static detection rule checks."""
 
     def lint(self, rule) -> list[LintFinding]:
         raise NotImplementedError
 
     def lint_all(self, rules: list) -> dict[str, list[LintFinding]]:
-        return {r.id: self.lint(r) for r in rules}
+        return {str(r.id): self.lint(r) for r in rules}
+
+    def score(self, findings: list[LintFinding]) -> int:
+        """Return 0-100 quality score.  Override in subclasses for custom weights."""
+        raise NotImplementedError

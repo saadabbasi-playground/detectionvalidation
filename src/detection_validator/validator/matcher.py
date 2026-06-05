@@ -71,32 +71,42 @@ def _keyword_tokens(keywords: list[str]) -> list[str]:
     return tokens
 
 
-def _match_one(
-    techniques: list[str],
-    kw_tokens: list[str],
-    events: list[dict],
-) -> tuple[int, list[dict]]:
-    """Return (hit_count, sample_events[≤3]) for one rule against all events."""
+def _match_techniques(techniques: list[str], events: list[dict]) -> tuple[int, list[dict]]:
+    """Return (hit_count, samples≤3) for technique-ID matching only."""
     tech_set: set[str] = set()
     for tid in techniques:
         tech_set.add(tid.upper())
         tech_set.add(tid.split(".")[0].upper())
 
-    hits: list[dict] = []
-    for ev in events:
-        # Layer 1 — technique field exact match
-        ev_tech = str(ev.get("technique", "")).upper()
-        if ev_tech and ev_tech in tech_set:
-            hits.append(ev)
-            continue
-
-        # Layer 2 — keyword tokens in free-text fields
-        if kw_tokens:
-            haystack = " ".join(str(ev.get(f, "")) for f in _FREE_TEXT_FIELDS).lower()
-            if any(tok in haystack for tok in kw_tokens):
-                hits.append(ev)
-
+    hits = [
+        ev for ev in events
+        if str(ev.get("technique", "")).upper() in tech_set
+    ]
     return len(hits), hits[:3]
+
+
+def _match_keywords(kw_tokens: list[str], events: list[dict]) -> tuple[int, list[dict]]:
+    """Return (hit_count, samples≤3) for keyword-overlap matching only."""
+    hits = []
+    for ev in events:
+        haystack = " ".join(str(ev.get(f, "")) for f in _FREE_TEXT_FIELDS).lower()
+        if any(tok in haystack for tok in kw_tokens):
+            hits.append(ev)
+    return len(hits), hits[:3]
+
+
+def _match_one(
+    techniques: list[str],
+    kw_tokens: list[str],
+    events: list[dict],
+) -> tuple[int, list[dict]]:
+    """Combined match — used by callers that don't need verdict granularity."""
+    tech_count, tech_samples = _match_techniques(techniques, events)
+    if tech_count > 0:
+        return tech_count, tech_samples
+    if kw_tokens:
+        return _match_keywords(kw_tokens, events)
+    return 0, []
 
 
 def match_corpus(
@@ -148,25 +158,51 @@ def match_corpus(
             continue
 
         kw_tokens = _keyword_tokens(keywords)
-        query_desc = (
+        base_desc = (
             f"techniques=[{', '.join(techniques)}]"
             + (f"  keywords={len(keywords)}" if keywords else "")
             + (f"  since={since_dt.isoformat()[:16]}" if since_dt else "  (all time)")
             + f"  events={len(events)}"
         )
 
-        hit_count, samples = _match_one(techniques, kw_tokens, events)
-        passed = hit_count > 0
+        # Layer 2: technique-ID match (strong signal)
+        if techniques:
+            tech_count, tech_samples = _match_techniques(techniques, events)
+            if tech_count > 0:
+                detection.validation_status = ValidationStatus.PASSED
+                detection.last_validated = datetime.now(tz=timezone.utc)
+                results.append(RuleResult(
+                    rule_id=str(detection.id), name=detection.name,
+                    techniques=techniques, siem="local",
+                    query_desc=base_desc,
+                    hit_count=tech_count, sample_events=tech_samples,
+                    status="likely_fires",
+                ))
+                continue
 
-        detection.validation_status = ValidationStatus.PASSED if passed else ValidationStatus.FAILED
+        # Layer 3: keyword-overlap (weak signal)
+        if kw_tokens:
+            kw_count, kw_samples = _match_keywords(kw_tokens, events)
+            if kw_count > 0:
+                detection.validation_status = ValidationStatus.PASSED
+                detection.last_validated = datetime.now(tz=timezone.utc)
+                results.append(RuleResult(
+                    rule_id=str(detection.id), name=detection.name,
+                    techniques=techniques, siem="local",
+                    query_desc=base_desc + "  [keyword-overlap]",
+                    hit_count=kw_count, sample_events=kw_samples,
+                    status="keyword_partial",
+                ))
+                continue
+
+        detection.validation_status = ValidationStatus.FAILED
         detection.last_validated = datetime.now(tz=timezone.utc)
-
         results.append(RuleResult(
             rule_id=str(detection.id), name=detection.name,
             techniques=techniques, siem="local",
-            query_desc=query_desc,
-            hit_count=hit_count, sample_events=samples,
-            status="pass" if passed else "fail",
+            query_desc=base_desc,
+            hit_count=0, sample_events=[],
+            status="no_keyword_match",
         ))
 
     return results

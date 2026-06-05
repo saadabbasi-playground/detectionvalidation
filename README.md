@@ -1,6 +1,6 @@
 # detection-validator
 
-Simulate real CVE-based attacks against a Linux victim, capture genuine kernel-level audit events, and test whether your detection rules actually fire — all on a single MacBook with Apple Silicon.
+Simulate CVE-based attacks against a Linux victim, capture kernel-level audit events, and perform **static coverage and keyword-overlap analysis** on your detection rules — all on a single MacBook with Apple Silicon.
 
 ```
 Vagrant VM (Ubuntu 22.04 ARM64)    Mac host
@@ -23,7 +23,7 @@ Vagrant VM (Ubuntu 22.04 ARM64)    Mac host
 If you already have Docker Desktop, Vagrant, vagrant-qemu, and Python 3.12 installed:
 
 ```bash
-git clone https://github.com/saadabbasi-playground/detectionvalidation.git detection-validator
+git clone https://github.com/saadabbasi-playground/DetectionValidationSystem.git detection-validator
 cd detection-validator
 uv venv && uv pip install -e ".[dev]"
 source .venv/bin/activate
@@ -32,7 +32,7 @@ export OPENSEARCH_INITIAL_ADMIN_PASSWORD="DetectVal123!"
 dv demo
 ```
 
-`dv demo` starts the Docker stack, boots the VM, runs the canary check, fires a Log4Shell exploit, waits for telemetry, and validates 9 Sigma rules — all in one go. Expected result: **7 PASS / 2 FAIL** (LSASS and Nmap are intentionally excluded from this scenario).
+`dv demo` starts the Docker stack, boots the VM, runs the canary check, fires a Log4Shell exploit, waits for telemetry, and runs keyword-overlap analysis on 9 Sigma rules — all in one go. Expected result: **7 LIKELY_FIRES / 2 NO_KEYWORD_MATCH** (LSASS and Nmap are intentionally excluded from this scenario).
 
 ---
 
@@ -69,7 +69,7 @@ Run these commands once, in order:
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/saadabbasi-playground/detectionvalidation.git detection-validator
+git clone https://github.com/saadabbasi-playground/DetectionValidationSystem.git detection-validator
 cd detection-validator
 
 # 2. Create a Python virtual environment and install the tool
@@ -272,30 +272,42 @@ dv attack --cve CVE-2021-26855 --target vagrant --agent-port 9098 --watch
 dv validate examples/detections/sigma/ --since 1
 ```
 
-This loads every Sigma rule in that directory, builds a query for each one, runs it against OpenSearch, and reports PASS or FAIL:
+This loads every Sigma rule in that directory, translates each one to a query, runs it against OpenSearch, and reports a verdict:
 
 ```
  Rule                            Techniques               Hits  SIEM         Status
- LSASS Memory Dump via TM        T1003.001                   0  opensearch   ✗ FAIL
- Log4Shell JNDI Injection        T1190, T1059.004          156  opensearch   ✓ PASS
- Log4Shell RCE - Outbound Conn   T1190, T1059.004            1  opensearch   ✓ PASS
- MSHTA Spawning Windows Shell    T1218.005, T1059.001       94  opensearch   ✓ PASS
- Nmap Port Scan Detected         T1046                       0  opensearch   ✗ FAIL
- PrintNightmare Spooler Abuse    T1068, T1547.012           14  opensearch   ✓ PASS
- ProxyLogon Exchange SSRF        T1190, T1505.003           62  opensearch   ✓ PASS
- ProxyLogon - Sensitive File     T1190, T1552.001           32  opensearch   ✓ PASS
+ LSASS Memory Dump via TM        T1003.001                   0  opensearch   ✗ NO_KEYWORD_MATCH
+ Log4Shell JNDI Injection        T1190, T1059.004          156  opensearch   ✓ LIKELY_FIRES
+ Log4Shell RCE - Outbound Conn   T1190, T1059.004            1  opensearch   ✓ LIKELY_FIRES
+ MSHTA Spawning Windows Shell    T1218.005, T1059.001       94  opensearch   ~ KEYWORD_PARTIAL
+ Nmap Port Scan Detected         T1046                       0  opensearch   ✗ NO_KEYWORD_MATCH
+ PrintNightmare Spooler Abuse    T1068, T1547.012           14  opensearch   ✓ LIKELY_FIRES
+ ProxyLogon Exchange SSRF        T1190, T1505.003           62  opensearch   ✓ LIKELY_FIRES
+ ProxyLogon - Sensitive File     T1190, T1552.001           32  opensearch   ✓ LIKELY_FIRES
 
-Results: 8 rule(s)  6 PASS  2 FAIL  0 ERROR  0 SKIP
+Results: 8 rule(s)  5 LIKELY_FIRES  1 KEYWORD_PARTIAL  2 NO_KEYWORD_MATCH  0 ERROR  0 SKIP
 ```
 
-> **Why do LSASS and Nmap fail?** LSASS targets a Windows process — the Vagrant VM runs Linux, so that event is never generated. Nmap requires an active port scan to be run. Both are expected failures.
+**Verdict meanings:**
 
-### How a rule passes
+| Verdict | Meaning |
+|---|---|
+| `LIKELY_FIRES` | Sigma field-level or technique-ID match — the rule's own logic matched telemetry |
+| `KEYWORD_PARTIAL` | A keyword from the detection block appeared in event text — weaker signal; does not confirm the rule would actually fire |
+| `NO_KEYWORD_MATCH` | No technique ID or keyword overlap found in the local telemetry window |
+| `NETWORK_RULE` | Rule targets network telemetry (DNS, proxy, firewall); lab corpus may not contain this source |
+| `BEHAVIOURAL_RULE` | Rule relies on baselining or anomaly scoring; static keyword matching cannot confirm it |
 
-The validator uses a three-layer strategy:
-1. **Sigma field-level translation** — translates the `detection:` block to an OpenSearch query and runs it. Most precise.
-2. **Technique ID match** — matches the `technique` field against ATT&CK IDs in the rule's tags.
-3. **Keyword match** — free-text search across `proctitle`, `cmd_output`, and `message`.
+> **Why do LSASS and Nmap show NO_KEYWORD_MATCH?** LSASS targets a Windows process — the Vagrant VM runs Linux, so that event is never generated. Nmap requires an active port scan. Both are expected.
+
+### How the analysis works
+
+Three-layer strategy, tried in order:
+1. **Sigma field-level translation** — translates the `detection:` block to a field-level OpenSearch query. Most precise; produces `LIKELY_FIRES`.
+2. **Technique ID match** — queries for events tagged with ATT&CK IDs declared in the rule. Produces `LIKELY_FIRES`.
+3. **Keyword overlap** — free-text search across `proctitle`, `cmd_output`, `message`. Produces `KEYWORD_PARTIAL` (weaker signal).
+
+A `LIKELY_FIRES` result means telemetry matching the rule's own logic was found. It does **not** mean the rule is correctly tuned for production — test with real traffic before deploying.
 
 ### Time window
 
@@ -409,7 +421,7 @@ for h in json.load(sys.stdin)['hits']['hits']:
 dv match --events events.jsonl examples/detections/sigma/ --since 0 --format json | dv report
 ```
 
-`--since 0` means "use all events in the file regardless of timestamp". Notice the evaluation time — it is usually under 0.05 seconds because everything runs in memory with no network calls.
+`--since 0` means "use all events in the file regardless of timestamp". Notice the evaluation time — it is usually under 0.05 seconds because everything runs in memory. No API keys required.
 
 ---
 
@@ -934,7 +946,7 @@ Ready-to-use rules in `examples/detections/`:
 | `dv doctor` | Pre-flight check: Python, Docker, Vagrant, SIEMs, agent, caches |
 | `dv doctor --fix` | Same, plus auto-download empty intelligence caches |
 | `dv attack` | Execute CVE exploit steps against the victim VM |
-| `dv validate` | Query live SIEM for rule hits, report PASS/FAIL |
+| `dv validate` | Query live SIEM for rule hits, report LIKELY_FIRES/KEYWORD_PARTIAL/NO_KEYWORD_MATCH |
 | `dv match` | Same evaluation offline against a local JSONL event file |
 | `dv report` | Render results as CLI summary / SARIF / HTML |
 | `dv watch` | Re-validate automatically whenever rule files change |
@@ -963,7 +975,7 @@ Ready-to-use rules in `examples/detections/`:
 ┌─ Python CLI (dv) ──────────────────────────────────────────────┐
 │  dv doctor       — pre-flight check: tools, containers, caches │
 │  dv attack       — simulate CVE exploit steps on victim        │
-│  dv validate     — query live SIEM, report PASS/FAIL per rule  │
+│  dv validate     — keyword-overlap analysis, verdict per rule   │
 │  dv match        — same evaluation offline against a JSONL file│
 │  dv report       — render results as CLI / SARIF / HTML        │
 │  dv watch        — re-validate on rule file changes            │

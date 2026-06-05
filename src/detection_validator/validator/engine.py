@@ -369,8 +369,7 @@ class OpenSearchValidator:
             keywords = _sigma_keywords(raw)
 
         # ── Layer 1: Sigma field-level translation ────────────────────────────
-        # Translate the detection: block to a proper field-level OpenSearch query.
-        # This is the most precise layer — it evaluates the actual Sigma logic.
+        # Most precise — evaluates the actual Sigma detection: block.
         sigma_clause = _sigma_detection_to_os_query(raw) if raw else None
         if sigma_clause:
             size = 5
@@ -399,14 +398,17 @@ class OpenSearchValidator:
                                    + (f"  since={self._since_iso[:16]}" if self._since_iso else ""),
                         hit_count=total,
                         sample_events=samples,
-                        status="pass",
+                        status="likely_fires",
                     )
             except Exception:
                 pass  # fall through to technique/keyword layers
 
-        # ── Layer 2 & 3: technique ID + keyword fallback ──────────────────────
-        query = _build_os_query(techniques, keywords, self._since_iso)
-        if not query:
+        # ── Layer 2: technique ID match ───────────────────────────────────────
+        # Strong signal — event carries the same ATT&CK technique ID as the rule.
+        tech_query = _build_os_query(techniques, [], self._since_iso) if techniques else {}
+        kw_query = _build_os_query([], keywords, self._since_iso) if keywords else {}
+
+        if not tech_query and not kw_query:
             return RuleResult(
                 rule_id=str(detection.id),
                 name=detection.name,
@@ -418,26 +420,58 @@ class OpenSearchValidator:
                 error="Rule has no technique IDs or keywords to match against",
             )
 
-        query_desc = (
+        base_desc = (
             f"techniques=[{', '.join(techniques)}]"
             + (f"  keywords={len(keywords)}" if keywords else "")
             + (f"  since={self._since_iso[:16]}" if self._since_iso else "  (all time)")
         )
 
         try:
-            total, samples = self._search(query)
-            passed = total > 0
-            detection.validation_status = ValidationStatus.PASSED if passed else ValidationStatus.FAILED
+            if tech_query:
+                total, samples = self._search(tech_query)
+                if total > 0:
+                    detection.validation_status = ValidationStatus.PASSED
+                    detection.last_validated = datetime.now(tz=timezone.utc)
+                    return RuleResult(
+                        rule_id=str(detection.id),
+                        name=detection.name,
+                        techniques=techniques,
+                        siem="opensearch",
+                        query_desc=base_desc,
+                        hit_count=total,
+                        sample_events=samples,
+                        status="likely_fires",
+                    )
+
+            # ── Layer 3: keyword-overlap fallback ─────────────────────────────
+            # Weaker signal — keywords from detection block appear in event text.
+            if kw_query:
+                total, samples = self._search(kw_query)
+                if total > 0:
+                    detection.validation_status = ValidationStatus.PASSED
+                    detection.last_validated = datetime.now(tz=timezone.utc)
+                    return RuleResult(
+                        rule_id=str(detection.id),
+                        name=detection.name,
+                        techniques=techniques,
+                        siem="opensearch",
+                        query_desc=base_desc + "  [keyword-overlap]",
+                        hit_count=total,
+                        sample_events=samples,
+                        status="keyword_partial",
+                    )
+
+            detection.validation_status = ValidationStatus.FAILED
             detection.last_validated = datetime.now(tz=timezone.utc)
             return RuleResult(
                 rule_id=str(detection.id),
                 name=detection.name,
                 techniques=techniques,
                 siem="opensearch",
-                query_desc=query_desc,
-                hit_count=total,
-                sample_events=samples,
-                status="pass" if passed else "fail",
+                query_desc=base_desc,
+                hit_count=0,
+                sample_events=[],
+                status="no_keyword_match",
             )
         except Exception as exc:
             return RuleResult(
@@ -445,7 +479,7 @@ class OpenSearchValidator:
                 name=detection.name,
                 techniques=techniques,
                 siem="opensearch",
-                query_desc=query_desc,
+                query_desc=base_desc,
                 hit_count=0,
                 status="error",
                 error=str(exc),
@@ -504,14 +538,14 @@ class SplunkValidator:
                 techniques = _sigma_techniques(raw)
             keywords = _sigma_keywords(raw)
 
-        # Build a simple OR search for the mock (it does raw LIKE matching)
-        terms: list[str] = list(techniques)
+        # Build separate technique-only and keyword-only term lists.
+        kw_tokens: list[str] = []
         for kw in keywords:
             tokens = [t for t in re.split(r"[^a-zA-Z0-9_-]", _strip_wildcards(kw)) if len(t) >= 4]
-            terms.extend(tokens[:2])  # cap keywords per rule to avoid huge OR chains
+            kw_tokens.extend(tokens[:2])
+        kw_tokens = list(dict.fromkeys(kw_tokens))
 
-        terms = list(dict.fromkeys(terms))  # deduplicate
-        if not terms:
+        if not techniques and not kw_tokens:
             return RuleResult(
                 rule_id=str(detection.id),
                 name=detection.name,
@@ -523,33 +557,63 @@ class SplunkValidator:
                 error="No technique IDs or keywords to search",
             )
 
-        search_str = " OR ".join(terms)
-        query_desc = f"search: {search_str[:80]}"
-
-        try:
+        def _splunk_search(terms: list[str]) -> tuple[int, list[dict]]:
+            search_str = " OR ".join(terms)
             sid = self._post_search(search_str)
             if not sid:
                 raise RuntimeError("Empty sid from search job POST")
             resp = self._get(f"/services/search/jobs/{sid}/results")
-            results = resp.get("results", [])
-            # Filter by time window on client side (mock doesn't support time filter)
+            hits = resp.get("results", [])
             if self._since_ts:
-                results = [r for r in results if float(r.get("_time", 0)) >= self._since_ts]
-            total = len(results)
-            passed = total > 0
+                hits = [r for r in hits if float(r.get("_time", 0)) >= self._since_ts]
+            return len(hits), hits[:3]
 
-            detection.validation_status = ValidationStatus.PASSED if passed else ValidationStatus.FAILED
+        try:
+            # Layer 2: technique-ID match (strong signal)
+            if techniques:
+                total, samples = _splunk_search(list(techniques))
+                if total > 0:
+                    detection.validation_status = ValidationStatus.PASSED
+                    detection.last_validated = datetime.now(tz=timezone.utc)
+                    return RuleResult(
+                        rule_id=str(detection.id),
+                        name=detection.name,
+                        techniques=techniques,
+                        siem="splunk",
+                        query_desc=f"search: {' OR '.join(techniques)[:80]}",
+                        hit_count=total,
+                        sample_events=samples,
+                        status="likely_fires",
+                    )
+
+            # Layer 3: keyword-overlap (weak signal)
+            if kw_tokens:
+                total, samples = _splunk_search(kw_tokens)
+                if total > 0:
+                    detection.validation_status = ValidationStatus.PASSED
+                    detection.last_validated = datetime.now(tz=timezone.utc)
+                    return RuleResult(
+                        rule_id=str(detection.id),
+                        name=detection.name,
+                        techniques=techniques,
+                        siem="splunk",
+                        query_desc=f"search: {' OR '.join(kw_tokens)[:80]}  [keyword-overlap]",
+                        hit_count=total,
+                        sample_events=samples,
+                        status="keyword_partial",
+                    )
+
+            detection.validation_status = ValidationStatus.FAILED
             detection.last_validated = datetime.now(tz=timezone.utc)
-
             return RuleResult(
                 rule_id=str(detection.id),
                 name=detection.name,
                 techniques=techniques,
                 siem="splunk",
-                query_desc=query_desc,
-                hit_count=total,
-                sample_events=results[:3],
-                status="pass" if passed else "fail",
+                query_desc=f"search: {' OR '.join(techniques + kw_tokens)[:80]}",
+                hit_count=0,
+                sample_events=[],
+                status="no_keyword_match",
             )
         except Exception as exc:
             return RuleResult(
@@ -557,7 +621,7 @@ class SplunkValidator:
                 name=detection.name,
                 techniques=techniques,
                 siem="splunk",
-                query_desc=query_desc,
+                query_desc="(search failed)",
                 hit_count=0,
                 status="error",
                 error=str(exc),

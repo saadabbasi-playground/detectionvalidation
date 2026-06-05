@@ -38,10 +38,14 @@ td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #1e2433;
 tr:hover td { background: #1e2433; }
 .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 9999px;
          font-size: 0.75rem; font-weight: 600; }
-.badge-pass { background: #052e16; color: #4ade80; }
-.badge-fail { background: #2d0a0a; color: #f87171; }
+.badge-likely-fires { background: #052e16; color: #4ade80; }
+.badge-keyword-partial { background: #2d2200; color: #fde68a; }
+.badge-no-keyword-match { background: #2d0a0a; color: #f87171; }
 .badge-error { background: #2d1f00; color: #fbbf24; }
 .badge-skip { background: #1a2035; color: #64748b; }
+/* legacy compat */
+.badge-pass { background: #052e16; color: #4ade80; }
+.badge-fail { background: #2d0a0a; color: #f87171; }
 .tech { display: inline-block; background: #1e3a5f; color: #93c5fd;
         border-radius: 4px; padding: 0.1rem 0.4rem; font-size: 0.75rem;
         margin: 0.1rem; font-family: monospace; }
@@ -68,8 +72,21 @@ _TACTIC_NAMES = {
 }
 
 
+_BADGE_LABEL = {
+    "likely_fires":     ("likely-fires",     "LIKELY FIRES"),
+    "keyword_partial":  ("keyword-partial",  "KEYWORD PARTIAL"),
+    "no_keyword_match": ("no-keyword-match", "NO KEYWORD MATCH"),
+    "error":            ("error",            "ERROR"),
+    "skip":             ("skip",             "SKIP"),
+    # legacy compat
+    "pass":             ("pass",             "PASS"),
+    "fail":             ("fail",             "FAIL"),
+}
+
+
 def _badge(status: str) -> str:
-    return f'<span class="badge badge-{status}">{status.upper()}</span>'
+    css, label = _BADGE_LABEL.get(status, (status, status.upper()))
+    return f'<span class="badge badge-{css}">{label}</span>'
 
 
 def _tactic_for(tid: str) -> str:
@@ -78,11 +95,12 @@ def _tactic_for(tid: str) -> str:
 
 
 def build(results: list[dict]) -> str:
-    passed = [r for r in results if r.get("status") == "pass"]
-    failed = [r for r in results if r.get("status") == "fail"]
-    errors = [r for r in results if r.get("status") == "error"]
+    _COVERED = {"likely_fires", "keyword_partial", "pass"}
+    passed  = [r for r in results if r.get("status") in _COVERED]
+    failed  = [r for r in results if r.get("status") in ("no_keyword_match", "fail")]
+    errors  = [r for r in results if r.get("status") == "error"]
     skipped = [r for r in results if r.get("status") == "skip"]
-    total = len(results)
+    total   = len(results)
     pass_pct = round(len(passed) / total * 100) if total else 0
 
     # Covered technique IDs

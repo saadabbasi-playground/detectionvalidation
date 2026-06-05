@@ -39,22 +39,23 @@ def build(results: list[dict]) -> dict:
             },
         })
 
-    # One SARIF result per failing/erroring rule
+    # One SARIF result per non-covered / erroring rule
+    _COVERED = {"likely_fires", "keyword_partial", "pass"}  # pass = legacy compat
     sarif_results: list[dict] = []
     for r in results:
-        status = r.get("status", "fail")
-        if status in ("pass", "skip"):
+        status = r.get("status", "no_keyword_match")
+        if status in _COVERED or status == "skip":
             continue
 
         rid = r.get("rule_id") or r.get("name", "unknown")
         level = "error" if status == "error" else "warning"
 
         if status == "error":
-            msg = f"Validation error: {r.get('error', 'unknown error')}"
+            msg = f"Static analysis error: {r.get('error', 'unknown error')}"
         else:
             techs = ", ".join(r.get("techniques") or [])
             msg = (
-                f"Detection rule did not fire against live telemetry. "
+                f"No keyword or technique overlap found in local telemetry. "
                 f"Techniques: {techs or '(none)'}. "
                 f"Query: {r.get('query', '')}."
             )
