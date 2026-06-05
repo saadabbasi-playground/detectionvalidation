@@ -3017,5 +3017,74 @@ def lint_cmd(rules: str, min_score: int, export_md: str | None) -> None:
         err_console.print(f"[green]✓[/] Markdown report written to [bold]{export_md}[/]")
 
 
+@main.command("query")
+@click.argument("rule", type=click.Path(exists=True))
+@click.option("--siem", default="opensearch,elastic,splunk", show_default=True,
+              help="Comma-separated backends: opensearch, elastic, splunk.")
+@click.option("--deployable", is_flag=True, default=False,
+              help="Also produce deployable artifact formats (monitor_rule, kibana_ndjson, savedsearches).")
+@click.option("--export-dir", default=None, metavar="DIR",
+              help="Write query files to this directory instead of printing to stdout.")
+def query_cmd(rule: str, siem: str, deployable: bool, export_dir: str | None) -> None:
+    """Compile a Sigma rule to SIEM queries offline — no live SIEM needed.
+
+    Reads a single Sigma YAML rule file and compiles it to runnable queries
+    for the requested backends using pySigma.  No credentials or network
+    access required.
+
+    \b
+    Output formats per backend:
+      opensearch   default (Lucene)  + monitor_rule (JSON, --deployable)
+      elastic      default (Lucene)  + kibana_ndjson (--deployable)
+      splunk       default (SPL)     + savedsearches.conf (--deployable)
+
+    \b
+    Examples:
+      dv query examples/detections/sigma/log4shell_jndi_injection.yml
+      dv query rule.yml --siem opensearch,splunk --deployable
+      dv query rule.yml --siem elastic --deployable --export-dir reports/queries
+    """
+    from detection_validator.siem.query_gen import generate_queries
+
+    siems = [s.strip() for s in siem.split(",") if s.strip()]
+    results = generate_queries(rule, siems=siems, deployable=deployable)
+
+    export_path = Path(export_dir) if export_dir else None
+    if export_path:
+        export_path.mkdir(parents=True, exist_ok=True)
+
+    rule_stem = Path(rule).stem
+    any_error = False
+
+    for r in results:
+        tag = f"{r.siem}/{r.fmt}"
+        if r.query is None:
+            err_console.print(f"[red]✗[/] [{tag}]  {r.error}")
+            any_error = True
+            continue
+
+        if export_path:
+            ext_map = {
+                "monitor_rule": "json",
+                "kibana_ndjson": "ndjson",
+                "savedsearches": "conf",
+                "default": "txt",
+            }
+            ext = ext_map.get(r.fmt, "txt")
+            fname = f"{rule_stem}__{r.siem}__{r.fmt}.{ext}"
+            out_file = export_path / fname
+            out_file.write_text(r.query, encoding="utf-8")
+            deploy_flag = " [cyan](deployable)[/]" if r.deployable else ""
+            console.print(f"[green]✓[/] [{tag}]{deploy_flag} → {out_file}")
+        else:
+            deploy_flag = " [cyan](deployable)[/]" if r.deployable else ""
+            console.rule(f"[bold]{tag}[/]{deploy_flag}")
+            console.print(r.query)
+            console.print()
+
+    if any_error and not results:
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()
