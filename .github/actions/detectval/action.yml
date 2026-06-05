@@ -1,0 +1,55 @@
+name: 'DetectVal Analysis'
+description: >
+  Run detectval lint, coverage, and gap analysis on detection rules — no SIEM or
+  network required (gaps need a cached ATT&CK STIX bundle, downloaded separately).
+
+inputs:
+  rules-dir:
+    description: 'Path to detection rules directory (relative to workspace root)'
+    required: false
+    default: '.'
+  python-version:
+    description: 'Python version to use'
+    required: false
+    default: '3.12'
+
+outputs:
+  analysis-json:
+    description: 'Absolute path to the analysis JSON snapshot file'
+    value: ${{ steps.analyze.outputs.analysis-json }}
+  avg-lint-score:
+    description: 'Average lint score across all rules (0-100)'
+    value: ${{ steps.analyze.outputs.avg-lint-score }}
+  covered-count:
+    description: 'Number of ATT&CK techniques covered by the rule corpus'
+    value: ${{ steps.analyze.outputs.covered-count }}
+  rule-count:
+    description: 'Number of rules parsed'
+    value: ${{ steps.analyze.outputs.rule-count }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run analysis
+      id: analyze
+      shell: bash
+      env:
+        DV_RULES_DIR: ${{ inputs.rules-dir }}
+      run: |
+        set -euo pipefail
+
+        OUT="${RUNNER_TEMP}/detectval-analysis-${GITHUB_SHA:-head}.json"
+
+        uv run python -m detection_validator.ci.analyze \
+          "${GITHUB_WORKSPACE}/${DV_RULES_DIR}" \
+          --output "${OUT}"
+
+        echo "analysis-json=${OUT}" >> "${GITHUB_OUTPUT}"
+
+        AVG=$(uv run python3 -c "import json; d=json.load(open('${OUT}')); print(d['avg_lint_score'])")
+        COUNT=$(uv run python3 -c "import json; d=json.load(open('${OUT}')); print(len(d['covered_techniques']))")
+        RULES=$(uv run python3 -c "import json; d=json.load(open('${OUT}')); print(d['rule_count'])")
+
+        echo "avg-lint-score=${AVG}" >> "${GITHUB_OUTPUT}"
+        echo "covered-count=${COUNT}" >> "${GITHUB_OUTPUT}"
+        echo "rule-count=${RULES}" >> "${GITHUB_OUTPUT}"

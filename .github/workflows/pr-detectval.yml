@@ -1,0 +1,175 @@
+name: PR — DetectVal Coverage & Quality
+
+# Runs on every PR against main/master (and on push to those branches for the
+# job summary).  Posts or updates a single comment per PR showing:
+#   • ATT&CK coverage delta vs. the base branch
+#   • Rules below the lint quality threshold
+#   • Lint score regressions
+#   • Top priority coverage gaps (requires dv intel update cache)
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - '**.yml'
+      - '**.yaml'
+      - '**.json'
+      - 'src/**'
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      rules-dir:
+        description: 'Detection rules directory'
+        required: false
+        default: 'examples/detections'
+      min-lint-score:
+        description: 'Flag rules below this score'
+        required: false
+        default: '70'
+      top-n-gaps:
+        description: 'Number of priority gaps to show'
+        required: false
+        default: '10'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  # Override via workflow_dispatch inputs or repository variables.
+  RULES_DIR: ${{ inputs.rules-dir || vars.DETECTVAL_RULES_DIR || 'examples/detections' }}
+  MIN_LINT_SCORE: ${{ inputs.min-lint-score || vars.DETECTVAL_MIN_LINT_SCORE || '70' }}
+  TOP_N_GAPS: ${{ inputs.top-n-gaps || vars.DETECTVAL_TOP_N_GAPS || '10' }}
+
+jobs:
+  detectval:
+    name: Analyze detection coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so we can worktree the base branch.
+          fetch-depth: 0
+
+      # ── Python + detectval ────────────────────────────────────────────────
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: 'latest'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install detectval
+        run: uv sync --extra dev
+
+      # ── ATT&CK STIX cache (optional — gaps section skipped if missing) ───
+      - name: Restore ATT&CK STIX cache
+        id: attack-cache
+        uses: actions/cache@v4
+        with:
+          # Cache the entire detectval intel directory (STIX + meta files).
+          path: ~/.cache/detectval
+          key: attack-stix-${{ hashFiles('src/detection_validator/intel/attack_cache/*.meta.json') }}-v1
+          restore-keys: |
+            attack-stix-
+
+      - name: Fetch ATT&CK KB (if cache miss)
+        if: steps.attack-cache.outputs.cache-hit != 'true'
+        run: |
+          uv run dv intel update --source attack \
+            || echo "::warning::ATT&CK KB download failed — gap analysis will be skipped"
+
+      # ── Analyse HEAD ──────────────────────────────────────────────────────
+      - name: Analyse HEAD
+        id: head
+        uses: ./.github/actions/detectval
+        with:
+          rules-dir: ${{ env.RULES_DIR }}
+
+      # ── Analyse BASE (git worktree) ───────────────────────────────────────
+      - name: Add base worktree
+        if: github.event_name == 'pull_request'
+        run: |
+          git worktree add "${RUNNER_TEMP}/dv-base" \
+            "origin/${{ github.base_ref }}" 2>/dev/null \
+            || git worktree add "${RUNNER_TEMP}/dv-base" \
+               "${{ github.event.pull_request.base.sha }}"
+
+      - name: Analyse BASE
+        id: base
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          BASE_DIR="${RUNNER_TEMP}/dv-base/${{ env.RULES_DIR }}"
+          OUT="${RUNNER_TEMP}/detectval-base.json"
+
+          if [ -d "${BASE_DIR}" ]; then
+            uv run python -m detection_validator.ci.analyze \
+              "${BASE_DIR}" --output "${OUT}" \
+              || echo '{"rule_count":0,"covered_techniques":[],"avg_lint_score":0,"lint_results":[],"gaps":[],"gaps_available":false}' > "${OUT}"
+          else
+            echo '{"rule_count":0,"covered_techniques":[],"avg_lint_score":0,"lint_results":[],"gaps":[],"gaps_available":false}' > "${OUT}"
+          fi
+
+          echo "json=${OUT}" >> "${GITHUB_OUTPUT}"
+
+      - name: Remove base worktree
+        if: always() && github.event_name == 'pull_request'
+        run: git worktree remove "${RUNNER_TEMP}/dv-base" --force 2>/dev/null || true
+
+      # ── Render comment ────────────────────────────────────────────────────
+      - name: Render PR comment
+        id: comment
+        shell: bash
+        env:
+          HEAD_JSON: ${{ steps.head.outputs.analysis-json }}
+          BASE_JSON: ${{ steps.base.outputs.json || '' }}
+          COMMENT_OUT: ${{ runner.temp }}/detectval-comment.md
+        run: |
+          COMMON_ARGS=(
+            --output "${COMMENT_OUT}"
+            --min-lint-score "${{ env.MIN_LINT_SCORE }}"
+            --top-n-gaps "${{ env.TOP_N_GAPS }}"
+            --rules-dir "${{ env.RULES_DIR }}"
+          )
+          if [ -n "${BASE_JSON}" ] && [ -f "${BASE_JSON}" ]; then
+            uv run python -m detection_validator.ci.comment \
+              --head "${HEAD_JSON}" --base "${BASE_JSON}" "${COMMON_ARGS[@]}"
+          else
+            uv run python -m detection_validator.ci.comment \
+              --head "${HEAD_JSON}" "${COMMON_ARGS[@]}"
+          fi
+
+          echo "path=${COMMENT_OUT}" >> "${GITHUB_OUTPUT}"
+
+      # ── Post / update PR comment ──────────────────────────────────────────
+      - name: Post PR comment
+        if: github.event_name == 'pull_request'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: ${{ steps.comment.outputs.path }}
+          # edit-mode: replace finds the previous comment (by marker) and
+          # updates it so each push doesn't add a new comment.
+          edit-mode: replace
+
+      # ── Job summary (also visible on push to main) ────────────────────────
+      - name: Write job summary
+        run: cat "${{ steps.comment.outputs.path }}" >> "${GITHUB_STEP_SUMMARY}"
+
+      # ── Optional: fail on severe quality drops ────────────────────────────
+      - name: Fail on critical quality drop
+        if: |
+          fromJSON(steps.head.outputs.avg-lint-score) < 50 ||
+          steps.head.outputs.rule-count == '0'
+        shell: bash
+        run: |
+          echo "::error::Avg lint score ${{ steps.head.outputs.avg-lint-score }}/100 is below critical threshold (50), or no rules were found."
+          exit 1
