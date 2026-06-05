@@ -2,6 +2,11 @@
 # Security and TLS are DISABLED — for local development only.
 # Requires Docker Desktop with ~2 GB RAM available.
 #
+# Multi-arch: both image tags publish linux/amd64 AND linux/arm64 manifests
+# (verified via `docker manifest inspect`). No `platform:` key is set here —
+# Docker selects the correct layer for the host automatically. Works on
+# Apple Silicon (arm64) and Windows 11 / x86-64 (amd64) without changes.
+#
 # Usage (via CLI):
 #   dv siem up        # start
 #   dv siem down      # stop  (data volume preserved)
