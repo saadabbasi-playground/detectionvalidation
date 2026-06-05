@@ -205,7 +205,7 @@ def validate_live(
     """
     from detection_validator.telemetry.base import NotAvailable
     from detection_validator.telemetry.indexer import bulk_index, index_name_for
-    from detection_validator.validator.engine import _sigma_detection_to_os_query
+    from detection_validator.validator.engine import _pysigma_to_lucene
 
     technique_ids = [t.full_id for t in (detection.mitre_techniques or [])]
     if not technique_ids:
@@ -274,9 +274,9 @@ def validate_live(
             continue
 
         # ── Step 3: build the OS query ────────────────────────────────────────
-        sigma_clause = _sigma_detection_to_os_query(raw_yaml) if raw_yaml else None
-        if sigma_clause:
-            query_body = {"bool": {"must": sigma_clause}}
+        lucene_str_live, _ = _pysigma_to_lucene(raw_yaml) if raw_yaml else (None, None)
+        if lucene_str_live:
+            query_body = {"query_string": {"query": lucene_str_live}}
         else:
             # Fallback: exact match on the technique_id tag we injected at index time
             query_body = {"term": {"technique_id": tid}}

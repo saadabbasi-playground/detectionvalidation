@@ -48,28 +48,30 @@ def _render_results(
     tbl.add_column("Source", width=11)
     tbl.add_column("Status", width=8)
 
-    likely_fires = kw_partial = no_kw_match = errors = skipped = 0
+    condition_match = tech_only = kw_only = no_match = errors = skipped = 0
     covered_techniques: set[str] = set()
 
     _STATUS_DISPLAY: dict[str, tuple[str, str]] = {
-        "likely_fires":     ("✓", "green"),
-        "keyword_partial":  ("~", "yellow"),
-        "no_keyword_match": ("✗", "red"),
-        "error":            ("!", "yellow"),
-        "skip":             ("–", "dim"),
+        "condition_match": ("✓", "green"),
+        "technique_only":  ("~", "yellow"),
+        "keyword_only":    ("≈", "yellow"),
+        "no_match":        ("✗", "red"),
+        "error":           ("!", "yellow"),
+        "skip":            ("–", "dim"),
     }
 
     for r in results:
         icon, style = _STATUS_DISPLAY.get(r.status, ("?", "white"))
 
-        if r.status == "likely_fires":
-            likely_fires += 1
+        if r.status == "condition_match":
+            condition_match += 1
             covered_techniques.update(r.techniques)
-        elif r.status == "keyword_partial":
-            kw_partial += 1
-            covered_techniques.update(r.techniques)
-        elif r.status == "no_keyword_match":
-            no_kw_match += 1
+        elif r.status == "technique_only":
+            tech_only += 1
+        elif r.status == "keyword_only":
+            kw_only += 1
+        elif r.status == "no_match":
+            no_match += 1
         elif r.status == "error":
             errors += 1
         else:
@@ -79,7 +81,7 @@ def _render_results(
         hit_str = str(r.hit_count) if r.status not in ("error", "skip") else "-"
         tbl.add_row(r.name[:38], tech_str, hit_str, r.siem, f"[{style}]{icon} {r.status.upper()}[/]")
 
-        if r.status in ("likely_fires", "keyword_partial") and r.sample_events:
+        if r.status in ("condition_match", "technique_only", "keyword_only") and r.sample_events:
             ev = r.sample_events[0]
             snippet = (
                 ev.get("proctitle") or ev.get("cmd_output") or
@@ -97,11 +99,17 @@ def _render_results(
     total = len(results)
     console.print(
         f"[bold]Results:[/] {total} rule(s)  "
-        f"[green]{likely_fires} LIKELY_FIRES[/]  "
-        f"[yellow]{kw_partial} KEYWORD_PARTIAL[/]  "
-        f"[red]{no_kw_match} NO_KEYWORD_MATCH[/]  "
+        f"[green]{condition_match} CONDITION_MATCH[/]  "
+        f"[yellow]{tech_only} TECHNIQUE_ONLY[/]  "
+        f"[yellow]{kw_only} KEYWORD_ONLY[/]  "
+        f"[red]{no_match} NO_MATCH[/]  "
         f"[yellow]{errors} ERROR[/]  [dim]{skipped} SKIP[/]  "
         f"({elapsed:.1f}s)"
+    )
+    console.print(
+        "[dim]Legend: CONDITION_MATCH=Sigma fields matched (true pass)  "
+        "TECHNIQUE_ONLY=ATT&CK ID in events only  "
+        "KEYWORD_ONLY=keyword overlap only  NO_MATCH=no evidence[/]"
     )
     if covered_techniques:
         console.print(
