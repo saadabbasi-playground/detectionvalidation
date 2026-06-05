@@ -389,16 +389,30 @@ def match(rules: str, events_file: str, since: float, output: str, fmt: str) -> 
               type=click.Choice(["cli", "json", "sarif", "html"]))
 @click.option("--output", "-o", default="-", show_default=True,
               help="Output file path (- for stdout).")
-def report(results_file: str, fmt: str, output: str) -> None:
+@click.option("--html", "do_html", is_flag=True, default=False,
+              help="Generate a comprehensive posture report to reports/detectval-report.html "
+                   "(lint + gaps + SIEM queries — no running SIEM needed).")
+@click.option("--open", "do_open", is_flag=True, default=False,
+              help="Open the HTML report in the default browser after writing (requires --html).")
+@click.option("--rules-dir", "rules_dir", default="examples/detections/sigma", show_default=True,
+              type=click.Path(), help="Rules directory scanned when --html is passed.")
+def report(results_file: str, fmt: str, output: str,
+           do_html: bool, do_open: bool, rules_dir: str) -> None:
     """Generate a validation report from 'dv validate --format json' output.
 
-    Reads the JSON results produced by 'dv validate --format json' and
-    renders them in the requested format.
+    With --html, skips the JSON input entirely and builds a comprehensive
+    posture report directly from the rules directory (lint + gaps + SIEM
+    queries).  No running OpenSearch or Vagrant is required.
 
     \b
     Examples:
       # Pipe directly from validate
       dv validate examples/detections/sigma/ --format json | dv report
+
+      # Comprehensive posture report (no SIEM needed)
+      dv report --html
+      dv report --html --open
+      dv report --html --rules-dir path/to/rules
 
       # Save results then render as HTML
       dv validate examples/detections/sigma/ --format json -o results.json
@@ -410,6 +424,39 @@ def report(results_file: str, fmt: str, output: str) -> None:
     import json as _json
     import sys as _sys
     from pathlib import Path as _Path
+
+    # ── Comprehensive HTML mode (--html) — no results JSON needed ─────────────
+    if do_html:
+        from detection_validator.reporters.html import gather_report_data, write_report
+
+        rd = _Path(rules_dir)
+        if not rd.exists():
+            err_console.print(f"[red]✗[/] Rules directory not found: {rd}")
+            raise SystemExit(1)
+
+        out_html = _Path("reports") / "detectval-report.html"
+
+        with console.status("[cyan]Parsing rules, running lint + query generation…[/]"):
+            data = gather_report_data(rd)
+
+        write_report(data, out_html)
+        console.print(
+            f"\n  [green]✓[/]  Report written to [bold]{out_html}[/]\n"
+            f"  Posture score:  [{('green' if data.posture_score >= 70 else 'yellow' if data.posture_score >= 40 else 'red')}]"
+            f"{data.posture_score:.0f}/100[/]\n"
+            f"  Rules:          {len(data.rules)}\n"
+            f"  Techniques:     {len(data.covered_techniques)}\n"
+            f"  Priority gaps:  {len(data.gaps)}\n"
+        )
+        if not data.kb_available:
+            console.print(
+                "  [yellow]⚠[/]  ATT&CK heatmap + gap list unavailable.\n"
+                "       Run [cyan]dv intel update --source attack[/] to enable them.\n"
+            )
+        if do_open:
+            import webbrowser as _wb
+            _wb.open(out_html.resolve().as_uri())
+        return
 
     # ── Load results ──────────────────────────────────────────────────────────
     try:
