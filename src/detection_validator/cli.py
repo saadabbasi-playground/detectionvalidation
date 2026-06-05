@@ -3596,5 +3596,172 @@ def telemetry_sources() -> None:
     console.print(tbl)
 
 
+@main.command("validate-live")
+@click.option("--rule-id", required=True, metavar="ID_OR_PATH",
+              help="Rule UUID (scanned from --rules-dir) or path to a Sigma YAML file.")
+@click.option("--source", "source_name", default="replay", show_default=True,
+              help="Telemetry source: replay or live-local.")
+@click.option("--platform", default="windows", show_default=True,
+              help="Target platform passed to source.ensure().")
+@click.option("--rules-dir", default="examples/detections/sigma", show_default=True,
+              type=click.Path(), help="Directory scanned when --rule-id is a UUID.")
+@click.option("--os-url", default="http://localhost:9200", show_default=True,
+              help="OpenSearch base URL.")
+@click.option("--file", "file_path", default=None, type=click.Path(exists=True),
+              help="Use a local JSON/JSONL file as the telemetry source instead of OTRF.")
+def validate_live_cmd(
+    rule_id: str,
+    source_name: str,
+    platform: str,
+    rules_dir: str,
+    os_url: str,
+    file_path: str | None,
+) -> None:
+    """Recall-validate a rule against known-attack telemetry.
+
+    \b
+    ╔══════════════════════════════════════════════════════════════╗
+    ║  ⚠  RECALL TEST — not a false-positive rate assessment      ║
+    ║                                                              ║
+    ║  This runs your rule against events we *know* are attack     ║
+    ║  activity (OTRF Security-Datasets or live capture).          ║
+    ║                                                              ║
+    ║  VALIDATED_RECALL = rule fires on real attack events         ║
+    ║  MISSED           = attack telemetry present, rule missed it ║
+    ║  NOT_VALIDATABLE  = no telemetry available (reason shown)    ║
+    ║                                                              ║
+    ║  This does NOT test false-positive rate. For FP rate you     ║
+    ║  need benign baseline traffic, which this command does not   ║
+    ║  provide.                                                    ║
+    ╚══════════════════════════════════════════════════════════════╝
+
+    \b
+    Examples:
+      dv validate-live --rule-id examples/detections/sigma/credential_dump_lsass.yml
+      dv validate-live --rule-id b3c5e9a1-72f4-4c9e-b8d3-125e4f6a7c8d
+      dv validate-live --rule-id path/to/rule.yml --source live-local
+      dv validate-live --rule-id path/to/rule.yml --file data/my-events.json
+    """
+    from detection_validator.telemetry.base import registry as tel_registry
+    from detection_validator.telemetry.replay import ReplaySource
+    from detection_validator.validator.validate_live import (
+        RecallVerdict,
+        LiveValidationResult,
+        resolve_rule,
+        validate_live,
+    )
+
+    # ── 1: Load rule ──────────────────────────────────────────────────────────
+    try:
+        detection, rule_path = resolve_rule(rule_id, Path(rules_dir))
+    except FileNotFoundError as exc:
+        err_console.print(f"[red]✗[/] {exc}")
+        raise SystemExit(1)
+
+    # ── 2: Build source ───────────────────────────────────────────────────────
+    if file_path:
+        source = ReplaySource(file_path=file_path)
+        source_label = f"file:{Path(file_path).name}"
+    else:
+        try:
+            source = tel_registry.get(source_name)
+        except KeyError as exc:
+            err_console.print(f"[red]✗[/] {exc}")
+            raise SystemExit(1)
+        source_label = source_name
+
+    # ── 3: Print recall banner ────────────────────────────────────────────────
+    console.print()
+    console.rule("[bold yellow]⚠  RECALL TEST — not a false-positive assessment[/]")
+    console.print(
+        "  [dim]This measures whether the rule fires on known-attack events.[/]\n"
+        "  [dim]It does NOT measure false-positive rate.[/]\n"
+    )
+
+    console.print(
+        f"  Rule    [bold]{detection.name}[/]  ([dim]{detection.id[:8]}…[/])\n"
+        f"  Source  [bold]{source_label}[/]  platform={platform}\n"
+        f"  SIEM    [cyan]{os_url}[/]\n"
+    )
+
+    # ── 4: Run validation ─────────────────────────────────────────────────────
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"),
+                  transient=True, console=err_console) as prog:
+        prog.add_task("Fetching telemetry and running query…", total=None)
+        result: LiveValidationResult = validate_live(
+            detection=detection,
+            source=source,
+            rule_path=rule_path,
+            platform=platform,
+            os_url=os_url,
+        )
+
+    # ── 5: Print per-technique results ────────────────────────────────────────
+    from rich.table import Table as _Table
+
+    tbl = _Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+    tbl.add_column("Technique", style="cyan", width=12)
+    tbl.add_column("Verdict", width=20)
+    tbl.add_column("Events", justify="right", width=7)
+    tbl.add_column("Hits", justify="right", width=6)
+    tbl.add_column("Index", style="dim")
+
+    _VERDICT_STYLE = {
+        RecallVerdict.VALIDATED_RECALL: ("VALIDATED_RECALL", "green"),
+        RecallVerdict.MISSED: ("MISSED", "red"),
+        RecallVerdict.NOT_VALIDATABLE: ("NOT_VALIDATABLE", "yellow"),
+    }
+
+    any_error = False
+    for tr in result.technique_results:
+        label, style = _VERDICT_STYLE[tr.verdict]
+        tbl.add_row(
+            tr.technique_id,
+            f"[{style}]{label}[/]",
+            str(tr.event_count) if tr.event_count else "-",
+            str(tr.match_count) if tr.match_count else "-",
+            tr.index or "-",
+        )
+        if tr.not_available_reason:
+            tbl.add_row("", f"  [dim]{tr.not_available_reason[:72]}[/]", "", "", "")
+        if tr.verdict == RecallVerdict.NOT_VALIDATABLE:
+            any_error = True
+
+    console.print(tbl)
+    console.print()
+
+    # ── 6: Lucene query + Dashboards hint ─────────────────────────────────────
+    for tr in result.technique_results:
+        if tr.lucene_query and tr.verdict != RecallVerdict.NOT_VALIDATABLE:
+            console.print("[bold]Query (paste into Dashboards search bar):[/]")
+            console.print(f"  [cyan]{tr.lucene_query[:200]}[/]\n")
+            break
+
+    console.print("[bold]OpenSearch Dashboards[/]")
+    console.print(f"  UI:  [cyan]http://localhost:5601[/]")
+    for tr in result.technique_results:
+        if tr.index:
+            console.print(f"  Index:  [cyan]{tr.index}[/]")
+            break
+
+    console.print()
+    console.rule()
+
+    # ── 7: Overall verdict + recall disclaimer ────────────────────────────────
+    overall = result.overall_verdict
+    label, style = _VERDICT_STYLE[overall]
+    console.print(f"\n  Overall: [{style}][bold]{label}[/][/]\n")
+
+    console.print(
+        "  [dim]Reminder: VALIDATED_RECALL confirms detection fires on attack events.[/]\n"
+        "  [dim]To measure false-positive rate, run the rule against benign traffic.[/]\n"
+    )
+
+    if any_error:
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()
