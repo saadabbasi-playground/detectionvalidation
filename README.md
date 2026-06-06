@@ -1029,14 +1029,21 @@ Ready-to-use rules in `examples/detections/`:
 | `dv match` | Same evaluation offline against a local JSONL event file |
 | `dv report` | Render results as CLI summary / SARIF / HTML |
 | `dv watch` | Re-validate automatically whenever rule files change |
+| `dv lint` | Static quality analysis of detection rules — no SIEM required |
+| `dv gaps` | Identify ATT&CK technique gaps not covered by the detection corpus |
+| `dv query` | Compile a Sigma rule to SIEM queries offline — no live SIEM needed |
 | `dv ingest` | Parse Sigma/Splunk/KQL/YARA/EQL rules to canonical JSONL |
 | `dv map` | Map parsed rules to ATT&CK techniques |
 | `dv enrich` | Fill technique names, CVE metadata, and severity |
 | `dv migrate` | Convert rules between formats (sigma → splunk / kql / sigma) |
+| `dv repair` | Reset the Vagrant VM pipeline (auditd + victim-agent + Vector) to a known-good state |
 | `dv deploy` | Push rules to a live SIEM as alerting monitors or saved searches |
 | `dv badge` | Generate an SVG or JSON ATT&CK coverage badge |
+| `dv validate-live` | Recall-validate a rule against known-attack telemetry (OTRF datasets) |
 | `dv siem add` | Register an external SIEM (OpenSearch / Elasticsearch / Splunk) |
 | `dv siem list` | List all registered SIEM connections |
+| `dv siem up` | Pull images and start the Docker SIEM stack |
+| `dv siem down` | Stop the Docker SIEM stack (add `--volumes` to delete indexed data) |
 | `dv siem attach` | Configure Vector on the VM to also ship events to a registered SIEM |
 | `dv siem status` | Check SIEM connectivity and document counts |
 | `dv siem test` | Run a test query and display sample events |
@@ -1061,13 +1068,18 @@ Ready-to-use rules in `examples/detections/`:
 │  dv match        — same evaluation offline against a JSONL file│
 │  dv report       — render results as CLI / SARIF / HTML        │
 │  dv watch        — re-validate on rule file changes            │
+│  dv lint         — static quality score per rule (offline)     │
+│  dv gaps         — ATT&CK technique gaps in detection corpus   │
+│  dv query        — compile Sigma rule to SIEM queries offline  │
 │  dv ingest       — parse Sigma/Splunk/KQL/YARA/EQL to JSONL    │
 │  dv map          — map rules to ATT&CK techniques              │
 │  dv enrich       — fill technique names, CVE metadata, severity│
 │  dv migrate      — convert rules between formats               │
+│  dv repair       — reset VM pipeline to known-good state       │
 │  dv deploy       — push rules to OpenSearch / Splunk           │
+│  dv validate-live — recall-validate rule against attack data   │
 │  dv badge        — generate SVG / JSON coverage badge          │
-│  dv siem         — check connectivity, run test queries        │
+│  dv siem         — manage SIEMs, check connectivity, queries   │
 │  dv agent        — check agent health, fetch recent events     │
 │  dv telemetry export  — export VM audit events to local JSONL  │
 │  dv telemetry capture — fetch OTRF dataset, index offline      │
