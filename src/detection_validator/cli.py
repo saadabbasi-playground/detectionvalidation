@@ -228,6 +228,64 @@ def _siem_to_engine_kwargs(cfg: dict) -> dict:
     return {"siem": siem_type}
 
 
+def _resolve_opensearch_connection(
+    siem_name: "str | None" = None,
+) -> "tuple[str, str, str]":
+    """Return (url, user, password) for an OpenSearch connection.
+
+    Resolution order (first match wins):
+    1. DV_OPENSEARCH_URL / DV_OPENSEARCH_USER / DV_OPENSEARCH_PASS env vars
+    2. Named registry entry (siem_name) or first OpenSearch/Elasticsearch entry
+    3. OPENSEARCH_INITIAL_ADMIN_PASSWORD + https://localhost:9200 (lab default)
+
+    Raises SystemExit(1) if nothing is configured.
+    """
+    import os as _os
+
+    env_url = _os.environ.get("DV_OPENSEARCH_URL", "").strip()
+    if env_url:
+        return (
+            env_url.rstrip("/"),
+            (_os.environ.get("DV_OPENSEARCH_USER", "") or "admin").strip(),
+            _os.environ.get("DV_OPENSEARCH_PASS", "").strip(),
+        )
+
+    cfg: "dict | None" = None
+    if siem_name is not None:
+        cfg = _find_siem(siem_name)
+        if cfg is None:
+            err_console.print(
+                f"[red]No SIEM named '{siem_name}' in registry.[/]  "
+                f"Run: [cyan]dv siem add {siem_name} --type opensearch ...[/]"
+            )
+            raise SystemExit(1)
+    else:
+        for s in _load_registry():
+            if s.get("type", "opensearch") in ("opensearch", "elasticsearch"):
+                cfg = s
+                break
+
+    if cfg is not None:
+        return (
+            cfg.get("url", "https://localhost:9200").rstrip("/"),
+            cfg.get("username", "admin"),
+            cfg.get("password", ""),
+        )
+
+    legacy_pass = _os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "").strip()
+    if legacy_pass:
+        return ("https://localhost:9200", "admin", legacy_pass)
+
+    err_console.print(
+        "[red]No OpenSearch connection configured.[/]\n"
+        "  Register a SIEM: [cyan]dv siem add lab --type opensearch "
+        "--url https://localhost:9200[/]\n"
+        "  Or set env vars: [cyan]DV_OPENSEARCH_URL / DV_OPENSEARCH_USER "
+        "/ DV_OPENSEARCH_PASS[/]"
+    )
+    raise SystemExit(1)
+
+
 # ── CLI groups ─────────────────────────────────────────────────────────────────
 
 @click.group()
@@ -1420,11 +1478,11 @@ def siem_test(name: str | None, siem_type: str, index: str, size: int) -> None:
 
     # ── Local type-based test (original behavior) ─────────────────────────────
     if siem_type == "opensearch":
-        os_pass = _os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "")
+        _test_url, _test_user, _test_pass = _resolve_opensearch_connection()
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode()
+        creds = _b64.b64encode(f"{_test_user}:{_test_pass}".encode()).decode()
         query = _json.dumps({
             "size": size,
             "sort": [{"timestamp": {"order": "desc"}}],
@@ -1432,7 +1490,7 @@ def siem_test(name: str | None, siem_type: str, index: str, size: int) -> None:
             "_source": ["timestamp", "technique", "key", "exe", "uid", "cmd_output"],
         }).encode()
         req = urllib.request.Request(
-            f"https://localhost:9200/{index}/_search",
+            f"{_test_url}/{index}/_search",
             data=query,
             headers={"Content-Type": "application/json",
                      "Authorization": f"Basic {creds}"},
@@ -2107,15 +2165,12 @@ def deploy(rules: str, siem: str, index: str, dry_run: bool) -> None:
     deployed = failed = 0
 
     if siem == "opensearch":
-        os_pass = _os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "")
-        if not os_pass:
-            err_console.print("[red]OPENSEARCH_INITIAL_ADMIN_PASSWORD not set[/]")
-            raise SystemExit(1)
+        _deploy_url, _deploy_user, _deploy_pass = _resolve_opensearch_connection()
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        creds = _b64.b64encode(f"admin:{os_pass}".encode()).decode()
-        base_url = "https://localhost:9200/_plugins/_alerting/monitors"
+        creds = _b64.b64encode(f"{_deploy_user}:{_deploy_pass}".encode()).decode()
+        base_url = f"{_deploy_url}/_plugins/_alerting/monitors"
 
         for det in detections:
             techs = [t.full_id for t in det.mitre_techniques]
@@ -3111,9 +3166,7 @@ def attack(
 
         _time.sleep(5)  # let Vector flush
         console.print("\n[bold]Attack events in OpenSearch (last 20):[/]\n")
-        os_url = "https://localhost:9200"
-        os_user = "admin"
-        os_pass = "DetectVal123!"
+        os_url, os_user, os_pass = _resolve_opensearch_connection()
         query = json.dumps({
             "size": 20,
             "query": {"term": {"source.keyword": AGENT_SOURCE_TAG}},

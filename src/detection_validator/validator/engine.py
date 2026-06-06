@@ -184,7 +184,7 @@ class OpenSearchValidator:
         self,
         host: str = "https://localhost:9200",
         user: str = "admin",
-        password: str = "DetectVal123!",
+        password: str = "",
         index: str = "dv-telemetry-*",
         since_hours: float = 24.0,
     ) -> None:
@@ -525,7 +525,7 @@ def validate_corpus(
     since_hours: float = 24.0,
     os_host: str = "https://localhost:9200",
     os_user: str = "admin",
-    os_pass: str = "DetectVal123!",
+    os_pass: str = "",
     os_index: str = "dv-telemetry-*",
     splunk_rest: str = "http://localhost:8089",
     splunk_hec: str = "http://localhost:8088",

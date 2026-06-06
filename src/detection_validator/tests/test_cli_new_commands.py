@@ -261,7 +261,8 @@ class TestDeploy:
         )
         assert "succeeded" in result.output
 
-    def test_missing_password_exits_1_for_opensearch(self) -> None:
+    @patch("detection_validator.cli._load_registry", return_value=[])
+    def test_missing_password_exits_1_for_opensearch(self, _mock_reg) -> None:
         result = runner.invoke(
             main,
             ["deploy", _LOG4SHELL, "--siem", "opensearch"],
@@ -519,3 +520,70 @@ class TestCveDedup:
             cve_ids = [r.cve_id for r in d.cve_references]
             assert len(cve_ids) == len(set(cve_ids)), \
                 f"{yml.name}: duplicate CVE refs {cve_ids}"
+
+
+# ── _resolve_opensearch_connection ───────────────────────────────────────────
+
+class TestResolveOpensearchConnection:
+    """Unit tests for the SIEM connection resolver helper."""
+
+    def setup_method(self):
+        from detection_validator.cli import _resolve_opensearch_connection
+        self._resolve = _resolve_opensearch_connection
+
+    @patch("detection_validator.cli._load_registry", return_value=[])
+    def test_dv_env_vars_take_priority(self, _mock_reg, monkeypatch) -> None:
+        monkeypatch.setenv("DV_OPENSEARCH_URL", "https://prod.example.com:9200")
+        monkeypatch.setenv("DV_OPENSEARCH_USER", "ops")
+        monkeypatch.setenv("DV_OPENSEARCH_PASS", "s3cr3t")
+        url, user, pw = self._resolve()
+        assert url == "https://prod.example.com:9200"
+        assert user == "ops"
+        assert pw == "s3cr3t"
+
+    @patch("detection_validator.cli._load_registry", return_value=[])
+    def test_dv_env_url_with_trailing_slash_stripped(self, _mock_reg, monkeypatch) -> None:
+        monkeypatch.setenv("DV_OPENSEARCH_URL", "https://host:9200/")
+        monkeypatch.delenv("DV_OPENSEARCH_USER", raising=False)
+        monkeypatch.delenv("DV_OPENSEARCH_PASS", raising=False)
+        url, user, _ = self._resolve()
+        assert not url.endswith("/")
+        assert user == "admin"
+
+    @patch("detection_validator.cli._load_registry", return_value=[
+        {"name": "lab", "type": "opensearch", "url": "https://os.lab:9200",
+         "username": "labuser", "password": "labpass"},
+    ])
+    def test_registry_entry_used_when_no_env_vars(self, _mock_reg, monkeypatch) -> None:
+        monkeypatch.delenv("DV_OPENSEARCH_URL", raising=False)
+        monkeypatch.delenv("OPENSEARCH_INITIAL_ADMIN_PASSWORD", raising=False)
+        url, user, pw = self._resolve()
+        assert url == "https://os.lab:9200"
+        assert user == "labuser"
+        assert pw == "labpass"
+
+    @patch("detection_validator.cli._find_siem", return_value=None)
+    @patch("detection_validator.cli._load_registry", return_value=[])
+    def test_named_siem_not_found_exits_1(self, _mock_reg, _mock_find, monkeypatch) -> None:
+        monkeypatch.delenv("DV_OPENSEARCH_URL", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            self._resolve(siem_name="nonexistent")
+        assert exc.value.code == 1
+
+    @patch("detection_validator.cli._load_registry", return_value=[])
+    def test_legacy_env_var_used_as_fallback(self, _mock_reg, monkeypatch) -> None:
+        monkeypatch.delenv("DV_OPENSEARCH_URL", raising=False)
+        monkeypatch.setenv("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "legacypass")
+        url, user, pw = self._resolve()
+        assert url == "https://localhost:9200"
+        assert user == "admin"
+        assert pw == "legacypass"
+
+    @patch("detection_validator.cli._load_registry", return_value=[])
+    def test_no_config_exits_1(self, _mock_reg, monkeypatch) -> None:
+        monkeypatch.delenv("DV_OPENSEARCH_URL", raising=False)
+        monkeypatch.delenv("OPENSEARCH_INITIAL_ADMIN_PASSWORD", raising=False)
+        monkeypatch.delenv("DV_OPENSEARCH_PASS", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            self._resolve()
+        assert exc.value.code == 1
