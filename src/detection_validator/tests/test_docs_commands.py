@@ -294,11 +294,14 @@ class TestOfflineSmoke:
 
     def test_deploy_no_siem_exits_1(self) -> None:
         """dv deploy without a SIEM should exit 1 with a helpful message."""
-        result = _runner.invoke(
-            main,
-            ["deploy", str(_EXAMPLES_SIGMA)],
-            env={"DV_OPENSEARCH_URL": "", "OPENSEARCH_INITIAL_ADMIN_PASSWORD": ""},
-        )
+        from unittest.mock import patch
+
+        with patch("detection_validator.cli._load_registry", return_value=[]):
+            result = _runner.invoke(
+                main,
+                ["deploy", str(_EXAMPLES_SIGMA)],
+                env={"DV_OPENSEARCH_URL": "", "OPENSEARCH_INITIAL_ADMIN_PASSWORD": ""},
+            )
         assert result.exit_code == 1
         assert "No OpenSearch connection configured" in result.output
         assert "Traceback" not in result.output
