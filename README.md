@@ -110,15 +110,19 @@ dv doctor — environment pre-flight check
   ✓ Vagrant 2.4.9
   ✓ Vagrant plugin vagrant-qemu
   ✓ Vagrant VM running
+  ✓ Victim agent reachable on port 9098 (Vagrant)
+  ✓ Audit events file: 247 events
   ✓ OPENSEARCH_INITIAL_ADMIN_PASSWORD set
   ✓ OpenSearch reachable (HTTP 200)
   ✓ Splunk mock reachable (HTTP 200)
-  ✓ Victim agent reachable on port 9098 (Vagrant)
+  ✓ Docker victim agent reachable on port 9099
   ✓ ATT&CK KB: 858 techniques
   ✓ KEV cache: 1243 entries
 
 All checks passed.
 ```
+
+The Vagrant checks (agent port, audit file) only run when the VM is confirmed running, so a stopped VM produces a precise single ✗ instead of cascading warnings.
 
 `dv doctor --fix` automatically downloads empty intelligence caches (ATT&CK knowledge base, CVE data).
 
@@ -398,6 +402,29 @@ dv report --results results.json --format html -o report.html
 ### Export events from the Vagrant VM
 
 ```bash
+dv telemetry export
+```
+
+This SSHes into the running VM, reads `/var/log/audit/audit-events.jsonl` (written by `victim-agent`), validates every line is parseable JSON (silently dropping any `sudo` noise), and writes a clean `events.jsonl` ready for `dv match`. Run `dv attack` first if the VM is new — the file will be empty otherwise.
+
+Common options:
+
+```bash
+dv telemetry export                             # writes events.jsonl (default)
+dv telemetry export --output attack-run.jsonl  # custom filename
+dv telemetry export --last 500                 # last 500 events only
+```
+
+If the VM is not running the command exits immediately:
+
+```
+✗ Vagrant VM is not running.
+  Start it: cd vagrant && vagrant up
+```
+
+The manual equivalent (for reference):
+
+```bash
 vagrant ssh -c "sudo cat /var/log/audit/audit-events.jsonl" > events.jsonl
 ```
 
@@ -484,15 +511,23 @@ No username or password required — security is disabled for local dev.
 To send detection telemetry to this instance and run `dv validate` against it:
 
 ```bash
-# Export events from the Vagrant VM into the local OpenSearch
-vagrant ssh -c "sudo cat /var/log/audit/audit-events.jsonl" \
-  | while IFS= read -r line; do
-      curl -s -X POST http://localhost:9200/dv-telemetry-$(date +%Y.%m.%d)/_doc \
-        -H 'Content-Type: application/json' -d "$line" > /dev/null
-    done
+# Export events from the Vagrant VM to a local file
+dv telemetry export --output events.jsonl
+
+# Bulk-index the exported events into the local OpenSearch
+while IFS= read -r line; do
+  curl -s -X POST "http://localhost:9200/dv-telemetry-$(date +%Y.%m.%d)/_doc" \
+    -H 'Content-Type: application/json' -d "$line" > /dev/null
+done < events.jsonl
 
 # Now validate rules against the local instance
 dv validate examples/detections/sigma/ --siem opensearch
+```
+
+Or skip the SIEM entirely and match offline:
+
+```bash
+dv telemetry export && dv match examples/detections/sigma/ --events events.jsonl --since 0
 ```
 
 The compose file lives at `docker/opensearch/docker-compose.yml` if you want to manage it directly with `docker compose`.
@@ -1007,6 +1042,9 @@ Ready-to-use rules in `examples/detections/`:
 | `dv siem test` | Run a test query and display sample events |
 | `dv agent status` | Check victim agent health endpoint |
 | `dv agent logs` | Fetch recent events from the victim agent |
+| `dv telemetry export` | Export live audit events from the Vagrant VM to a local JSONL file |
+| `dv telemetry capture` | Fetch a pre-recorded OTRF dataset and index it into OpenSearch |
+| `dv telemetry sources` | List registered telemetry sources |
 | `dv cve-coverage` | Analyze detection coverage gaps per CVE |
 | `dv navigator` | Export ATT&CK Navigator layer from detection corpus |
 | `dv intel update` | Refresh local ATT&CK, CVE, EPSS, KEV caches |
@@ -1031,6 +1069,8 @@ Ready-to-use rules in `examples/detections/`:
 │  dv badge        — generate SVG / JSON coverage badge          │
 │  dv siem         — check connectivity, run test queries        │
 │  dv agent        — check agent health, fetch recent events     │
+│  dv telemetry export  — export VM audit events to local JSONL  │
+│  dv telemetry capture — fetch OTRF dataset, index offline      │
 │  dv cve-coverage — analyze coverage gaps per CVE               │
 │  dv navigator    — export ATT&CK Navigator layer               │
 └────────────────────────────────────────────────────────────────┘
