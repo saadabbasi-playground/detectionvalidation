@@ -587,3 +587,113 @@ class TestResolveOpensearchConnection:
         with pytest.raises(SystemExit) as exc:
             self._resolve()
         assert exc.value.code == 1
+
+
+# ── dv telemetry export ───────────────────────────────────────────────────────
+
+class TestTelemetryExport:
+
+    def test_help_shows_options(self) -> None:
+        result = runner.invoke(main, ["telemetry", "export", "--help"])
+        assert result.exit_code == 0
+        assert "--source" in result.output
+        assert "--output" in result.output
+        assert "--last" in result.output
+
+    @patch("subprocess.run")
+    def test_vm_not_running_exits_1(self, mock_run, tmp_path) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="default  poweroff  (virtualbox)\n", stderr=""
+        )
+        result = runner.invoke(
+            main,
+            ["telemetry", "export", "--output", str(tmp_path / "out.jsonl")],
+        )
+        assert result.exit_code == 1
+        assert "not running" in result.output.lower() or "not running" in (result.stderr or "").lower()
+
+    @patch("subprocess.run")
+    def test_vagrant_not_found_exits_1(self, mock_run, tmp_path) -> None:
+        mock_run.side_effect = FileNotFoundError("vagrant not found")
+        result = runner.invoke(
+            main,
+            ["telemetry", "export", "--output", str(tmp_path / "out.jsonl")],
+        )
+        assert result.exit_code == 1
+
+    @patch("subprocess.run")
+    def test_empty_audit_file_exits_1(self, mock_run, tmp_path) -> None:
+        # status call → running; ssh call → empty output
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="default running (qemu)\n", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
+        result = runner.invoke(
+            main,
+            ["telemetry", "export", "--output", str(tmp_path / "out.jsonl")],
+        )
+        assert result.exit_code == 1
+
+    @patch("subprocess.run")
+    def test_valid_events_written_to_file(self, mock_run, tmp_path) -> None:
+        events = [
+            {"technique": "T1059", "exe": "/bin/bash", "uid": "1001",
+             "timestamp": "2024-01-01T00:00:00Z", "key": "shell_exec"},
+            {"technique": "T1190", "exe": "/usr/bin/curl", "uid": "0",
+             "timestamp": "2024-01-01T00:00:01Z", "key": "network_connect"},
+        ]
+        jsonl_body = "\n".join(json.dumps(e) for e in events)
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="default running (qemu)\n", stderr=""),
+            MagicMock(returncode=0, stdout=jsonl_body, stderr=""),
+        ]
+        out_file = tmp_path / "events.jsonl"
+        result = runner.invoke(
+            main,
+            ["telemetry", "export", "--output", str(out_file)],
+        )
+        assert result.exit_code == 0, result.output
+        assert out_file.exists()
+        lines = [json.loads(l) for l in out_file.read_text().splitlines() if l.strip()]
+        assert len(lines) == 2
+        assert lines[0]["technique"] == "T1059"
+
+    @patch("subprocess.run")
+    def test_non_json_lines_skipped(self, mock_run, tmp_path) -> None:
+        ssh_stdout = (
+            "sudo: setrlimit(RLIMIT_CORE): Operation not permitted\n"  # non-JSON
+            + json.dumps({"technique": "T1059", "exe": "/bin/bash",
+                          "uid": "0", "timestamp": "2024-01-01T00:00:00Z"}) + "\n"
+        )
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="default running (qemu)\n", stderr=""),
+            MagicMock(returncode=0, stdout=ssh_stdout, stderr=""),
+        ]
+        out_file = tmp_path / "events.jsonl"
+        result = runner.invoke(
+            main,
+            ["telemetry", "export", "--output", str(out_file)],
+        )
+        assert result.exit_code == 0
+        lines = [l for l in out_file.read_text().splitlines() if l.strip()]
+        assert len(lines) == 1
+
+    @patch("subprocess.run")
+    def test_output_consumable_by_match(self, mock_run, tmp_path) -> None:
+        """Events must include fields that dv match expects."""
+        events = [
+            {"technique": "T1059.004", "exe": "/bin/bash", "comm": "bash",
+             "uid": "33", "key": "shell_exec", "proctitle": "/bin/bash -c id",
+             "timestamp": "2024-01-01T00:00:00Z", "source": "auditd-agent"},
+        ]
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="default running (qemu)\n", stderr=""),
+            MagicMock(returncode=0,
+                      stdout="\n".join(json.dumps(e) for e in events), stderr=""),
+        ]
+        out_file = tmp_path / "events.jsonl"
+        runner.invoke(main, ["telemetry", "export", "--output", str(out_file)])
+        loaded = json.loads(out_file.read_text().splitlines()[0])
+        # Fields expected by dv match
+        for field in ("technique", "exe", "uid", "timestamp"):
+            assert field in loaded, f"missing field: {field}"

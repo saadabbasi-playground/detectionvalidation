@@ -27,6 +27,7 @@ systemctl start auditd || true
 
 echo ">>> Creating audit events JSONL directory..."
 mkdir -p /var/log/audit
+chmod 755 /var/log/audit
 touch /var/log/audit/audit-events.jsonl
 chmod 644 /var/log/audit/audit-events.jsonl
 

@@ -712,6 +712,7 @@ def doctor(fix: bool, canary: bool) -> None:
 
         # VM status — must run from the vagrant/ dir so Vagrant finds the Vagrantfile
         vagrant_dir = _Path(__file__).parents[2] / "vagrant"
+        _vm_running = False
         if vagrant_dir.exists():
             try:
                 r = subprocess.run(
@@ -722,12 +723,45 @@ def doctor(fix: bool, canary: bool) -> None:
                 status = (r.stdout + r.stderr).strip()
                 if "running" in status:
                     ok("Vagrant VM running")
+                    _vm_running = True
                 else:
                     warn("Vagrant VM not running", "run: cd vagrant && vagrant up")
             except Exception as exc:
                 warn("Vagrant VM status unknown", str(exc)[:60])
         else:
             warn("vagrant/ directory not found", "expected at project root")
+
+        # Agent reachable on 9098 (host-forwarded from VM port 9099)
+        if _vm_running:
+            _a_code, _ = http_get("http://localhost:9098/health", timeout=4)
+            if _a_code in range(200, 400):
+                ok("Victim agent reachable on port 9098 (Vagrant)")
+            else:
+                warn("Victim agent not reachable on 9098",
+                     "VM running but agent may still be starting — wait a moment")
+
+            # Audit events file: check existence and line count via SSH
+            try:
+                _r_audit = subprocess.run(
+                    ["vagrant", "ssh", "-c",
+                     "sudo wc -l /var/log/audit/audit-events.jsonl 2>/dev/null || echo 0"],
+                    capture_output=True, text=True, timeout=15,
+                    cwd=vagrant_dir,
+                )
+                _audit_out = _r_audit.stdout.strip()
+                try:
+                    _count = int(_audit_out.split()[0])
+                    if _count > 0:
+                        ok(f"Audit events file: {_count:,} events")
+                    else:
+                        warn(
+                            "Audit events file empty",
+                            "run: dv attack --cve CVE-2021-44228 --target vagrant",
+                        )
+                except (ValueError, IndexError):
+                    warn("Audit events file: could not parse count", _audit_out[:60])
+            except Exception as _exc:
+                warn("Audit events file check failed", str(_exc)[:60])
 
     # ── SIEM containers ───────────────────────────────────────────────────────
     os_pass = os.environ.get("OPENSEARCH_INITIAL_ADMIN_PASSWORD", "")
@@ -776,15 +810,13 @@ def doctor(fix: bool, canary: bool) -> None:
     else:
         warn(f"Splunk mock HTTP {code}", detail[:80])
 
-    # ── Victim agent ─────────────────────────────────────────────────────────
-    for port, label in [("9098", "Vagrant"), ("9099", "Docker")]:
-        code, detail = http_get(f"http://localhost:{port}/health", timeout=3)
-        if code in range(200, 400):
-            ok(f"Victim agent reachable on port {port} ({label})")
-            break
+    # ── Docker victim agent ───────────────────────────────────────────────────
+    _d_code, _ = http_get("http://localhost:9099/health", timeout=3)
+    if _d_code in range(200, 400):
+        ok("Docker victim agent reachable on port 9099")
     else:
-        warn("Victim agent not reachable on 9098 or 9099",
-             "start VM: cd vagrant && vagrant up  OR  ./dv up lab")
+        warn("Docker victim agent not reachable on 9099",
+             "run: ./dv up lab")
 
     # ── Intelligence caches ───────────────────────────────────────────────────
     try:
@@ -3713,6 +3745,135 @@ def telemetry_sources() -> None:
         tbl.add_row(name, desc.fidelity, ", ".join(desc.supported_platforms))
 
     console.print(tbl)
+
+
+@telemetry.command("export")
+@click.option("--source", "source_name", default="vagrant", show_default=True,
+              type=click.Choice(["vagrant"]),
+              help="Active telemetry source to export from.")
+@click.option("--output", "-o", default="events.jsonl", show_default=True,
+              type=click.Path(),
+              help="Local output JSONL file path.")
+@click.option("--last", default=0, show_default=True,
+              help="Export only the last N lines (0 = all events).")
+def telemetry_export(source_name: str, output: str, last: int) -> None:
+    """Export live telemetry from the Vagrant VM to a local JSONL file.
+
+    SSHs into the running Vagrant VM, reads
+    /var/log/audit/audit-events.jsonl (written by victim-agent), and
+    saves it locally so `dv match` can consume it without manual ssh.
+
+    \b
+    Examples:
+      dv telemetry export
+      dv telemetry export --output attack-run.jsonl
+      dv telemetry export --last 500
+      dv match examples/detections/sigma/ --events events.jsonl
+    """
+    import json as _json
+    import subprocess as _sub
+    from pathlib import Path as _Path
+
+    vagrant_dir = _Path(__file__).parents[2] / "vagrant"
+
+    if not vagrant_dir.exists():
+        err_console.print(
+            "[red]✗[/] vagrant/ directory not found at project root.\n"
+            "  Clone the full repo or run from the project root."
+        )
+        raise SystemExit(1)
+
+    # ── 1: confirm VM is running ──────────────────────────────────────────────
+    try:
+        _rs = _sub.run(
+            ["vagrant", "status", "--machine-readable"],
+            capture_output=True, text=True, timeout=15,
+            cwd=vagrant_dir,
+        )
+        if "running" not in (_rs.stdout + _rs.stderr):
+            err_console.print(
+                "[red]✗[/] Vagrant VM is not running.\n"
+                "  Start it: [cyan]cd vagrant && vagrant up[/]"
+            )
+            raise SystemExit(1)
+    except FileNotFoundError:
+        err_console.print(
+            "[red]✗[/] vagrant not found in PATH.\n"
+            "  Install: [cyan]brew install vagrant && "
+            "vagrant plugin install vagrant-qemu[/]"
+        )
+        raise SystemExit(1)
+    except SystemExit:
+        raise
+    except Exception as _exc:
+        err_console.print(f"[red]✗[/] Could not check VM status: {_exc}")
+        raise SystemExit(1)
+
+    # ── 2: export via vagrant ssh ─────────────────────────────────────────────
+    _remote_cmd = (
+        f"sudo tail -n {last} /var/log/audit/audit-events.jsonl"
+        if last > 0
+        else "sudo cat /var/log/audit/audit-events.jsonl"
+    )
+    console.print(
+        f"[bold cyan]Exporting vagrant telemetry[/]  "
+        f"source=[bold]{_remote_cmd.split()[2]}[/]  "
+        f"→ [cyan]{output}[/]"
+    )
+    try:
+        _re = _sub.run(
+            ["vagrant", "ssh", "-c", _remote_cmd],
+            capture_output=True, text=True, timeout=60,
+            cwd=vagrant_dir,
+        )
+    except _sub.TimeoutExpired:
+        err_console.print("[red]✗[/] SSH timed out — VM may be unresponsive")
+        raise SystemExit(1)
+    except Exception as _exc:
+        err_console.print(f"[red]✗[/] vagrant ssh failed: {_exc}")
+        raise SystemExit(1)
+
+    if _re.returncode != 0 and not _re.stdout.strip():
+        err_console.print(
+            f"[red]✗[/] vagrant ssh exited {_re.returncode}: "
+            f"{_re.stderr.strip()[:200]}"
+        )
+        raise SystemExit(1)
+
+    # ── 3: validate JSON lines and write output ───────────────────────────────
+    _out_path = _Path(output)
+    _valid = _invalid = 0
+    with _out_path.open("w", encoding="utf-8") as _fh:
+        for _line in _re.stdout.splitlines():
+            _line = _line.strip()
+            if not _line:
+                continue
+            try:
+                _json.loads(_line)
+                _fh.write(_line + "\n")
+                _valid += 1
+            except _json.JSONDecodeError:
+                _invalid += 1
+
+    if _valid == 0:
+        err_console.print(
+            "[red]✗[/] No valid JSON events found in export.\n"
+            "  Run an attack first: "
+            "[cyan]dv attack --cve CVE-2021-44228 --target vagrant[/]"
+        )
+        _out_path.unlink(missing_ok=True)
+        raise SystemExit(1)
+
+    if _invalid:
+        err_console.print(f"[yellow]⚠[/] Skipped {_invalid} non-JSON lines")
+
+    console.print(
+        f"[green]✓[/] Exported [bold]{_valid:,}[/] events → [cyan]{_out_path}[/]"
+    )
+    console.print(
+        f"\n  [dim]Next:[/] [cyan]dv match examples/detections/sigma/ "
+        f"--events {output}[/]"
+    )
 
 
 @main.command("validate-live")
