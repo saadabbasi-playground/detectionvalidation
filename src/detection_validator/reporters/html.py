@@ -703,11 +703,18 @@ def write_report(data: ReportData, path: Path) -> None:
 # ── Backward-compatible API (used by existing `dv report --format html`) ──────
 
 _BADGE_LABEL = {
+    # Current three-tier statuses (matcher.py / engine.py)
+    "condition_match":  ("likely-fires",     "CONDITION_MATCH"),
+    "technique_only":   ("keyword-partial",  "TECHNIQUE_ONLY"),
+    "keyword_only":     ("keyword-partial",  "KEYWORD_ONLY"),
+    "no_match":         ("no-keyword-match", "NO_MATCH"),
+    "untranslatable":   ("skip",             "UNTRANSLATABLE"),
+    "error":            ("error",            "ERROR"),
+    "skip":             ("skip",             "SKIP"),
+    # Legacy aliases kept for backward compatibility
     "likely_fires":     ("likely-fires",     "LIKELY FIRES"),
     "keyword_partial":  ("keyword-partial",  "KEYWORD PARTIAL"),
     "no_keyword_match": ("no-keyword-match", "NO KEYWORD MATCH"),
-    "error":            ("error",            "ERROR"),
-    "skip":             ("skip",             "SKIP"),
     "pass":             ("pass",             "PASS"),
     "fail":             ("fail",             "FAIL"),
 }
@@ -752,9 +759,10 @@ def build(results: list[dict]) -> str:
 
     Takes the ``list[dict]`` produced by ``dv validate --format json``.
     """
-    _COVERED = {"likely_fires", "keyword_partial", "pass"}
+    _COVERED = {"condition_match", "likely_fires", "keyword_partial", "pass"}
+    _FAILED  = {"no_match", "technique_only", "keyword_only", "no_keyword_match", "fail"}
     passed  = [r for r in results if r.get("status") in _COVERED]
-    failed  = [r for r in results if r.get("status") in ("no_keyword_match", "fail")]
+    failed  = [r for r in results if r.get("status") in _FAILED]
     errors  = [r for r in results if r.get("status") == "error"]
     total   = len(results)
     pass_pct = round(len(passed) / total * 100) if total else 0

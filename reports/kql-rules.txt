@@ -1,0 +1,27 @@
+// LSASS Memory Dump via Task Manager
+technique: "T1003.001"
+
+// Log4Shell JNDI Injection Attempt
+technique: "T1190" or technique: "T1059.004"
+
+// Log4Shell RCE - Outbound Network Connection from Vulnerable Process
+technique: "T1190" or technique: "T1059.004"
+
+// MSHTA Spawning Windows Shell
+technique: "T1218.005" or technique: "T1059.001"
+
+// Nmap Port Scan Detected
+technique: "T1046"
+
+// PrintNightmare Spooler Service Exploitation
+technique: "T1068" or technique: "T1547.012" or technique: "T1574.001"
+
+// ProxyLogon Exchange Server SSRF Exploitation
+technique: "T1190" or technique: "T1505.003" or technique: "T1078"
+
+// ProxyLogon - Sensitive File Access with Root Privileges
+technique: "T1190" or technique: "T1552.001" or technique: "T1078"
+
+// Test
+technique: "T1499" or technique: "T1059.004"
+

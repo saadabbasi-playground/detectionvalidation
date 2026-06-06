@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Detection Validation Report</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+     background:#0f1117;color:#e2e8f0;line-height:1.5}
+.wrap{max-width:1100px;margin:0 auto;padding:2rem 1.5rem}
+h1{font-size:1.6rem;font-weight:700;margin-bottom:.25rem}
+.subtitle{color:#94a3b8;font-size:.9rem;margin-bottom:2rem}
+.cards{display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:2rem}
+.card{background:#1e2433;border-radius:8px;padding:1.25rem 1.5rem;flex:1;min-width:140px}
+.card .num{font-size:2rem;font-weight:700}
+.card .lbl{font-size:.8rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em;margin-top:.25rem}
+section{margin-bottom:2.5rem}
+h2{font-size:1.1rem;font-weight:600;margin-bottom:1rem;padding-bottom:.5rem;border-bottom:1px solid #2d3748}
+table{width:100%;border-collapse:collapse;font-size:.875rem}
+th{text-align:left;padding:.6rem .75rem;font-size:.75rem;text-transform:uppercase;
+   letter-spacing:.05em;color:#64748b;background:#1a2035;border-bottom:1px solid #2d3748}
+td{padding:.6rem .75rem;border-bottom:1px solid #1e2433;vertical-align:top}
+tr:hover td{background:#1e2433}
+.badge{display:inline-block;padding:.15rem .5rem;border-radius:9999px;font-size:.75rem;font-weight:600}
+.badge-likely-fires{background:#052e16;color:#4ade80}
+.badge-keyword-partial{background:#2d2200;color:#fde68a}
+.badge-no-keyword-match{background:#2d0a0a;color:#f87171}
+.badge-error{background:#2d1f00;color:#fbbf24}
+.badge-skip{background:#1a2035;color:#64748b}
+.badge-pass{background:#052e16;color:#4ade80}
+.badge-fail{background:#2d0a0a;color:#f87171}
+.tech{display:inline-block;background:#1e3a5f;color:#93c5fd;border-radius:4px;
+      padding:.1rem .4rem;font-size:.75rem;margin:.1rem;font-family:monospace}
+.snippet{font-family:monospace;font-size:.78rem;color:#94a3b8;white-space:pre-wrap;word-break:break-all}
+.progress-bar{height:6px;background:#1e2433;border-radius:3px;overflow:hidden;margin-top:4px}
+.progress-fill{height:100%;background:#4ade80;border-radius:3px}
+.no-data{color:#64748b;font-style:italic;text-align:center;padding:2rem}
+</style>
+</head><body><div class="wrap">
+<h1>Detection Validation Report</h1>
+<p class="subtitle">Generated 2026-06-06 01:44 UTC</p>
+<div class="cards">
+  <div class="card"><div class="num">9</div><div class="lbl">Rules</div></div>
+  <div class="card"><div class="num" style="color:#4ade80">2</div><div class="lbl">Pass</div></div>
+  <div class="card"><div class="num" style="color:#f87171">5</div><div class="lbl">Fail</div></div>
+  <div class="card"><div class="num" style="color:#fbbf24">0</div><div class="lbl">Error</div></div>
+  <div class="card"><div class="num" style="color:#4ade80">22%</div><div class="lbl">Pass rate</div></div>
+  <div class="card"><div class="num" style="color:#4ade80">4</div><div class="lbl">Techniques covered</div></div>
+</div>
+<section><h2>Results</h2>
+<table><thead><tr><th>Rule</th><th>Techniques</th><th>SIEM</th><th style='text-align:right'>Hits</th><th>Status</th></tr></thead><tbody><tr><td>LSASS Memory Dump via Task Manager</td><td><span class="tech">T1003.001</span></td><td>local</td><td style='text-align:right'>0</td><td><span class="badge badge-no-keyword-match">NO_MATCH</span></td></tr><tr><td>Log4Shell JNDI Injection Attempt<div class="snippet">T1190</div></td><td><span class="tech">T1190</span> <span class="tech">T1059.004</span></td><td>local</td><td style='text-align:right'>10</td><td><span class="badge badge-keyword-partial">TECHNIQUE_ONLY</span></td></tr><tr><td>Log4Shell RCE - Outbound Network Connection from Vulnerable Process<div class="snippet">T1190</div></td><td><span class="tech">T1190</span> <span class="tech">T1059.004</span></td><td>local</td><td style='text-align:right'>3</td><td><span class="badge badge-likely-fires">CONDITION_MATCH</span></td></tr><tr><td>MSHTA Spawning Windows Shell</td><td><span class="tech">T1218.005</span> <span class="tech">T1059.001</span></td><td>local</td><td style='text-align:right'>0</td><td><span class="badge badge-no-keyword-match">NO_MATCH</span></td></tr><tr><td>Nmap Port Scan Detected<div class="snippet" style="color:#fbbf24">unsupported condition pattern: &#x27;selection | count() by id.orig_h &gt; 50&#x27;</div></td><td><span class="tech">T1046</span></td><td>local</td><td style='text-align:right'>0</td><td><span class="badge badge-skip">UNTRANSLATABLE</span></td></tr><tr><td>PrintNightmare Spooler Service Exploitation<div class="snippet" style="color:#fbbf24">unsupported condition pattern: &#x27;(selection_spooler_child and not filter_known_good) or selection_unc_dll&#x27;</div></td><td><span class="tech">T1068</span> <span class="tech">T1547.012</span> <span class="tech">T1574.001</span></td><td>local</td><td style='text-align:right'>0</td><td><span class="badge badge-skip">UNTRANSLATABLE</span></td></tr><tr><td>ProxyLogon Exchange Server SSRF Exploitation<div class="snippet">T1190</div></td><td><span class="tech">T1190</span> <span class="tech">T1505.003</span> <span class="tech">T1078</span></td><td>local</td><td style='text-align:right'>8</td><td><span class="badge badge-keyword-partial">TECHNIQUE_ONLY</span></td></tr><tr><td>ProxyLogon - Sensitive File Access with Root Privileges<div class="snippet">-rw-r--r-- 1 root root   1891 May 25 08:54 /etc/passwd
+-rw-r----- 1 root shadow 1045 May 25 08:54 /etc/shadow</div></td><td><span class="tech">T1190</span> <span class="tech">T1552.001</span> <span class="tech">T1078</span></td><td>local</td><td style='text-align:right'>1</td><td><span class="badge badge-likely-fires">CONDITION_MATCH</span></td></tr><tr><td>Test<div class="snippet">uid=0(root) gid=0(root) groups=0(root)
+root
+Linux dv-victim 5.15.0-143-generic #153-Ubuntu SMP Fri Jun 13 19:13:07 UTC 2</div></td><td><span class="tech">T1499</span> <span class="tech">T1059.004</span></td><td>local</td><td style='text-align:right'>4</td><td><span class="badge badge-keyword-partial">TECHNIQUE_ONLY</span></td></tr></tbody></table>
+</section>
+<section><h2>ATT&amp;CK Tactic Coverage</h2><table><thead><tr><th>Tactic</th><th>Coverage</th><th>Progress</th></tr></thead><tbody><tr><td>T1003</td><td>0/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:0%'></div></div></td></tr><tr><td>T1046</td><td>0/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:0%'></div></div></td></tr><tr><td>T1059</td><td>1/2</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:50%'></div></div></td></tr><tr><td>T1068</td><td>0/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:0%'></div></div></td></tr><tr><td>T1078</td><td>1/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:100%'></div></div></td></tr><tr><td>T1190</td><td>1/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:100%'></div></div></td></tr><tr><td>T1218</td><td>0/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:0%'></div></div></td></tr><tr><td>T1499</td><td>0/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:0%'></div></div></td></tr><tr><td>T1505</td><td>0/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:0%'></div></div></td></tr><tr><td>T1547</td><td>0/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:0%'></div></div></td></tr><tr><td>T1552</td><td>1/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:100%'></div></div></td></tr><tr><td>T1574</td><td>0/1</td><td style='min-width:120px'><div class='progress-bar'><div class='progress-fill' style='width:0%'></div></div></td></tr></tbody></table></section>
+</div></body></html>
