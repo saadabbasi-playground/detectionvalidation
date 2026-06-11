@@ -32,6 +32,12 @@ def _render_results(
                     "query": r.query_desc, "hits": r.hit_count,
                     "status": r.status, "error": r.error,
                     "samples": r.sample_events[:1],
+                    # Purple-team loop fields (default-zero when unused, so the
+                    # shape is stable for downstream tooling and CI dashboards):
+                    "fp_hits": getattr(r, "fp_hits", 0),
+                    "precision": getattr(r, "precision", None),
+                    "working": getattr(r, "working", False),
+                    "run_id": getattr(r, "run_id", None),
                 }
                 for r in results
             ]
@@ -302,11 +308,21 @@ def main() -> None:
               help="Only match telemetry from the last N hours (0 = all time).")
 @click.option("--index", default="dv-telemetry-*", show_default=True,
               help="OpenSearch index pattern to query.")
+@click.option("--benign", "benign_file", default=None,
+              type=click.Path(exists=True),
+              help="Benign ECS JSONL corpus for false-positive scoring. Each rule's "
+                   "field-level condition is re-evaluated locally against this corpus.")
+@click.option("--fp-threshold", "fp_threshold", default=0, show_default=True,
+              help="Max benign-corpus hits allowed before a rule is marked NOT working.")
 @click.option("--output", "-o", default="-", show_default=True,
               help="Write updated JSONL (with validation_status) to this file (- = stdout).")
 @click.option("--format", "fmt", default="cli", show_default=True,
               type=click.Choice(["cli", "json"]))
-def validate(rules: str, siem: str, since: float, index: str, output: str, fmt: str) -> None:
+def validate(
+    rules: str, siem: str, since: float, index: str,
+    benign_file: str | None, fp_threshold: int,
+    output: str, fmt: str,
+) -> None:
     """Validate detection rules against live SIEM telemetry.
 
     Loads every rule under RULES (file or directory), translates each one to a
@@ -369,6 +385,27 @@ def validate(rules: str, siem: str, since: float, index: str, output: str, fmt: 
         )
     elapsed = _time.time() - t0
 
+    # ── Benign-baseline FP scoring (local, no SIEM) ──────────────────────────
+    # The live SIEM gives us TP / attack hits via validate_corpus(). FPs come
+    # from running the same rule's Sigma condition against a known-good corpus
+    # we trust to be benign.
+    if benign_file:
+        from detection_validator.validator.matcher import load_events as _load_evs
+        from detection_validator.validator.matcher import _count_condition_hits as _fp_count
+
+        benign_events = _load_evs(_Path(benign_file), since_dt=None)
+        for det, res in zip(detections, results):
+            raw_yaml = ""
+            if det.detection_logic and det.detection_logic.raw:
+                raw_yaml = det.detection_logic.raw
+            if not raw_yaml.strip():
+                continue
+            fp = _fp_count(raw_yaml, benign_events)
+            tp = res.hit_count if res.status == "condition_match" else 0
+            res.fp_hits = fp
+            res.precision = (tp / (tp + fp)) if (tp + fp) > 0 else None
+            res.working = (res.status == "condition_match") and (fp <= fp_threshold)
+
     _render_results(results, detections, elapsed, output, fmt)
 
 
@@ -379,11 +416,22 @@ def validate(rules: str, siem: str, since: float, index: str, output: str, fmt: 
               help="JSONL event file to match against (e.g. audit-events.jsonl).")
 @click.option("--since", default=24.0, show_default=True,
               help="Only match events from the last N hours (0 = all events).")
+@click.option("--benign", "benign_file", default=None,
+              type=click.Path(exists=True),
+              help="Benign ECS JSONL corpus for false-positive scoring. Each rule's "
+                   "field-level condition is re-evaluated against this corpus; the "
+                   "count populates fp_hits / precision / working in the result.")
+@click.option("--fp-threshold", "fp_threshold", default=0, show_default=True,
+              help="Max benign-corpus hits allowed before a rule is marked NOT working.")
 @click.option("--output", "-o", default="-", show_default=True,
               help="Write updated JSONL (with validation_status) to this file (- = stdout).")
 @click.option("--format", "fmt", default="cli", show_default=True,
               type=click.Choice(["cli", "json"]))
-def match(rules: str, events_file: str, since: float, output: str, fmt: str) -> None:
+def match(
+    rules: str, events_file: str, since: float,
+    benign_file: str | None, fp_threshold: int,
+    output: str, fmt: str,
+) -> None:
     """Match detection rules against a local JSONL event file (no SIEM needed).
 
     Evaluates each rule in RULES against events in the JSONL file using the
@@ -436,13 +484,21 @@ def match(rules: str, events_file: str, since: float, output: str, fmt: str) -> 
         err_console.print(f"[red]No parseable rules found in:[/] {rules}")
         raise SystemExit(1)
 
+    benign_path = _Path(benign_file) if benign_file else None
+    benign_desc = f"  benign={benign_path.name}  fp<={fp_threshold}" if benign_path else ""
+
     err_console.print(
         f"[cyan]Loaded {len(detections)} rule(s)[/]  "
-        f"events={events_path.name}  since={since}h\n"
+        f"events={events_path.name}  since={since}h{benign_desc}\n"
     )
 
     t0 = _time.time()
-    results = match_corpus(detections, events_path, since_hours=since)
+    results = match_corpus(
+        detections, events_path,
+        since_hours=since,
+        benign_events_path=benign_path,
+        fp_threshold=fp_threshold,
+    )
     elapsed = _time.time() - t0
 
     _render_results(results, detections, elapsed, output, fmt)
@@ -2955,8 +3011,17 @@ def _run_exploit_direct(cve_id: str, vuln_port: str) -> None:
     console.print("[dim]Real auditd events generated — allow 3–5s for Vector to flush.[/]")
 
 
-def _run_attack_direct(scenario_path: Path, agent_port: str, delay: float) -> None:
-    """Run an attack scenario by calling the victim agent directly (vagrant mode)."""
+def _run_attack_direct(
+    scenario_path: Path, agent_port: str, delay: float,
+    run_id: str | None = None,
+) -> None:
+    """Run an attack scenario by calling the victim agent directly (vagrant mode).
+
+    When *run_id* is provided, every simulate payload is annotated with
+    ``extra.labels.run_id = <run_id>``. The victim agent merges ``extra`` into
+    the emitted event, so each event landing in the JSONL/SIEM carries
+    ``labels.run_id`` and can be correlated by ``dv loop``.
+    """
     import time as _time
     import urllib.request
 
@@ -3047,6 +3112,15 @@ def _run_attack_direct(scenario_path: Path, agent_port: str, delay: float) -> No
             err_console.print(f"[yellow]  ⚠ No steps for technique {tech_id}[/]")
             continue
         for step in steps:
+            # Tag every event in this run with labels.run_id so dv loop can
+            # correlate hits back to this specific attack invocation.
+            if run_id is not None:
+                step = dict(step)
+                step_extra = dict(step.get("extra") or {})
+                step_labels = dict(step_extra.get("labels") or {})
+                step_labels["run_id"] = run_id
+                step_extra["labels"] = step_labels
+                step["extra"] = step_extra
             payload = json.dumps(step).encode()
             req = urllib.request.Request(
                 simulate_url,
@@ -3874,6 +3948,259 @@ def telemetry_export(source_name: str, output: str, last: int) -> None:
         f"\n  [dim]Next:[/] [cyan]dv match examples/detections/sigma/ "
         f"--events {output}[/]"
     )
+
+
+@main.command("loop")
+@click.option("--cve", "cve_id", default=None,
+              help="CVE ID to simulate (e.g. CVE-2021-44228). Required unless --events is set.")
+@click.option("--scenario", "scenario_file", default=None, type=click.Path(),
+              help="Alternative to --cve: path to a YAML scenario for the attack runner.")
+@click.option("--target", default="vagrant",
+              type=click.Choice(["vagrant", "docker"]), show_default=True,
+              help="Attack target. Only 'vagrant' currently injects labels.run_id into "
+                   "emitted events; 'docker' relies on time-window correlation only.")
+@click.option("--rule", "rule_path", required=True, type=click.Path(exists=True),
+              help="Single Sigma rule YAML file to evaluate against the run telemetry.")
+@click.option("--events", "events_file", default=None, type=click.Path(exists=True),
+              help="Pre-recorded telemetry JSONL. When set, skips attack execution and "
+                   "runs the rule against these events using run_id + window correlation.")
+@click.option("--run-id", default=None,
+              help="Explicit run_id (default: generate a new UUID).")
+@click.option("--window-start", default=None, metavar="ISO_TS",
+              help="ISO timestamp for the start of the attack window. Required with --events.")
+@click.option("--window-end", default=None, metavar="ISO_TS",
+              help="ISO timestamp for the end of the attack window. Required with --events.")
+@click.option("--window-buffer", default=60, show_default=True,
+              help="Seconds of padding before/after the live attack run.")
+@click.option("--benign", "benign_file", default=None, type=click.Path(exists=True),
+              help="Benign ECS JSONL corpus for false-positive scoring.")
+@click.option("--fp-threshold", "fp_threshold", default=0, show_default=True,
+              help="Max benign-corpus hits allowed before the rule is marked NOT working.")
+@click.option("--agent-port", default="9098", show_default=True,
+              help="Victim agent HTTP port (vagrant target).")
+@click.option("--delay", default=1.5, show_default=True,
+              help="Seconds between attack steps.")
+@click.option("--output", "-o", default="-", show_default=True,
+              help="Write the per-rule result JSON to this file (- = stdout, '' = skip).")
+def loop_cmd(
+    cve_id: str | None,
+    scenario_file: str | None,
+    target: str,
+    rule_path: str,
+    events_file: str | None,
+    run_id: str | None,
+    window_start: str | None,
+    window_end: str | None,
+    window_buffer: int,
+    benign_file: str | None,
+    fp_threshold: int,
+    agent_port: str,
+    delay: float,
+    output: str,
+) -> None:
+    """Close the purple-team loop: attack → tag → correlate → validate (+ benign FP).
+
+    Generates a run_id, runs the attack so every emitted event carries
+    ``labels.run_id = <run_id>``, then evaluates the rule against ONLY events
+    tagged with that run_id whose @timestamp falls inside the attack window.
+    A condition_match is only a real condition_match when it hits an event
+    from THIS run — a hit on stale telemetry or another run is not a pass.
+
+    With ``--benign`` the same rule's condition is re-evaluated against a
+    known-good corpus; ``working`` is True only when:
+        condition_match on THIS run  AND  fp_hits <= --fp-threshold
+
+    \b
+    Live mode (vagrant):
+      dv loop --cve CVE-2021-44228 --target vagrant \\
+              --rule examples/detections/sigma/log4shell_process_exec.yml \\
+              --benign examples/telemetry/benign-ecs.jsonl
+
+    \b
+    Replay mode (events pre-captured):
+      dv loop --rule rule.yml --events captured.jsonl \\
+              --run-id abc-123 \\
+              --window-start 2026-06-11T10:00:00+00:00 \\
+              --window-end   2026-06-11T10:05:00+00:00 \\
+              --benign examples/telemetry/benign-ecs.jsonl
+    """
+    import uuid as _uuid
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from pathlib import Path as _Path
+
+    from detection_validator.parsers.registry import ParserRegistry
+    from detection_validator.parsers.base import ParseError
+    from detection_validator.validator.matcher import (
+        load_events as _load_evs,
+        match_corpus_correlated,
+        _parse_ts as _matcher_parse_ts,
+    )
+
+    # ── Parse the rule ───────────────────────────────────────────────────────
+    rule_p = _Path(rule_path)
+    registry = ParserRegistry()
+    parser = registry.find_parser(rule_p)
+    if parser is None:
+        err_console.print(f"[red]No parser available for rule:[/] {rule_p}")
+        raise SystemExit(1)
+    try:
+        detection = parser.parse_file(rule_p)
+    except ParseError as exc:
+        err_console.print(f"[red]Failed to parse rule:[/] {exc}")
+        raise SystemExit(1)
+
+    rid = run_id or str(_uuid.uuid4())
+
+    # ── Resolve event source + attack window ─────────────────────────────────
+    if events_file:
+        # Replay mode: use pre-recorded events.
+        win_start = _matcher_parse_ts(window_start) if window_start else None
+        win_end = _matcher_parse_ts(window_end) if window_end else None
+        events = _load_evs(_Path(events_file), since_dt=None)
+        mode = "replay"
+    else:
+        # Live mode: run the attack now.
+        if not cve_id and not scenario_file:
+            err_console.print(
+                "[red]Provide either --events <jsonl> for replay, or --cve / "
+                "--scenario to run the attack live.[/]"
+            )
+            raise SystemExit(1)
+        if target != "vagrant":
+            err_console.print(
+                f"[yellow]⚠ --target {target} cannot inject labels.run_id "
+                "into emitted events.[/]\n  Correlation will fall back to "
+                "time-window only. Use --target vagrant for the full loop."
+            )
+
+        # Resolve scenario path (mirrors `dv attack`).
+        _CVE_TO_SCENARIO = {
+            "CVE-2021-44228": "log4shell-cve-2021-44228.yml",
+            "CVE-2021-34527": "printnightmare-cve-2021-34527.yml",
+            "CVE-2021-26855": "proxylogon-cve-2021-26855.yml",
+        }
+        if cve_id:
+            cve_upper = cve_id.upper().strip()
+            fname = _CVE_TO_SCENARIO.get(cve_upper)
+            if fname is None:
+                err_console.print(f"[red]No built-in scenario for {cve_upper}.[/]")
+                err_console.print(f"  Available: {', '.join(_CVE_TO_SCENARIO)}")
+                raise SystemExit(1)
+            scenario_path = Path(__file__).parents[2] / "docker" / "atomic-runner" / "scenarios" / fname
+        else:
+            scenario_path = Path(scenario_file)
+
+        win_start = _dt.now(tz=_tz.utc) - _td(seconds=window_buffer)
+        console.print(
+            f"\n[bold cyan]⟳ Purple-team loop[/]  run_id={rid}  "
+            f"cve={cve_id or scenario_file}  target={target}\n"
+        )
+        if target == "vagrant":
+            _run_attack_direct(scenario_path, agent_port, delay, run_id=rid)
+        else:
+            # Docker fallback: run via the existing docker mode (no run_id tag).
+            import subprocess as _sp
+            cmd = [
+                "docker", "run", "--rm", "--network", "detectval-lab",
+                "-e", f"RUNNER_AGENT_PORT={agent_port}",
+                "-e", f"RUNNER_STEP_DELAY={delay}",
+                "detection-validator/atomic-runner:dev",
+                "run", "--scenario", f"/scenarios/{scenario_path.name}",
+            ]
+            _sp.run(cmd, check=False)
+
+        win_end = _dt.now(tz=_tz.utc) + _td(seconds=window_buffer)
+
+        # Pull events from the Vagrant VM. The user can override via --events.
+        # We avoid implicit network calls here: the live path expects the user
+        # to either pre-export events with `dv telemetry export`, or re-run
+        # `dv loop --events <exported.jsonl>` afterwards.
+        err_console.print(
+            "[yellow]⚠ Live loop ran the attack but does not auto-pull events.[/]\n"
+            "  Capture telemetry then re-run with --events:\n"
+            f"    [cyan]dv telemetry export --source vagrant -o run.jsonl[/]\n"
+            f"    [cyan]dv loop --rule {rule_path} --events run.jsonl \\\n"
+            f"        --run-id {rid} \\\n"
+            f"        --window-start {win_start.isoformat()} \\\n"
+            f"        --window-end   {win_end.isoformat()}"
+            + (f" \\\n        --benign {benign_file}" if benign_file else "")
+            + "[/]"
+        )
+        return
+
+    # ── Load benign corpus (if any) ──────────────────────────────────────────
+    benign_events: list[dict] = []
+    if benign_file:
+        benign_events = _load_evs(_Path(benign_file), since_dt=None)
+
+    # ── Apply correlation + match (hard constraint enforced here) ────────────
+    results = match_corpus_correlated(
+        [detection], events,
+        run_id=rid,
+        window_start=win_start,
+        window_end=win_end,
+        benign_events=benign_events,
+        fp_threshold=fp_threshold,
+    )
+    result = results[0]
+
+    # ── Report ───────────────────────────────────────────────────────────────
+    badge_color = {
+        "condition_match": "green",
+        "technique_only":  "yellow",
+        "keyword_only":    "yellow",
+        "no_match":        "red",
+        "untranslatable":  "yellow",
+        "skip":            "dim",
+        "error":           "red",
+    }.get(result.status, "white")
+
+    win_desc = (
+        f"{win_start.isoformat()[:19]} → {win_end.isoformat()[:19]}"
+        if win_start and win_end else
+        "(no window filter)"
+    )
+    console.print(f"\n[bold]Loop result[/]  rule={detection.name}")
+    console.print(f"  run_id:      {rid}")
+    console.print(f"  window:      {win_desc}")
+    console.print(f"  mode:        {mode}")
+    console.print(f"  status:      [{badge_color}]{result.status}[/]  hits={result.hit_count}")
+    if benign_events:
+        prec_str = f"{result.precision:.3f}" if result.precision is not None else "n/a"
+        console.print(
+            f"  fp_hits:     {result.fp_hits}  precision={prec_str}  "
+            f"working={'[green]YES[/]' if result.working else '[red]NO[/]'}"
+        )
+
+    # ── Output JSON (machine-readable) ───────────────────────────────────────
+    if output and output != "":
+        payload = {
+            "run_id": rid,
+            "rule_id": result.rule_id,
+            "rule_name": result.name,
+            "mode": mode,
+            "window_start": win_start.isoformat() if win_start else None,
+            "window_end": win_end.isoformat() if win_end else None,
+            "status": result.status,
+            "hit_count": result.hit_count,
+            "fp_hits": result.fp_hits,
+            "precision": result.precision,
+            "working": result.working,
+            "techniques": result.techniques,
+            "sample_events": result.sample_events,
+            "error": result.error,
+        }
+        text = json.dumps(payload, indent=2, default=str)
+        if output == "-":
+            print(text)
+        else:
+            Path(output).write_text(text, encoding="utf-8")
+            err_console.print(f"[green]✓[/] Loop result written to [bold]{output}[/]")
+
+    # Exit code: 1 when not "working" (or when no benign and not condition_match)
+    if benign_events:
+        raise SystemExit(0 if result.working else 1)
+    raise SystemExit(0 if result.status == "condition_match" else 1)
 
 
 @main.command("validate-live")

@@ -39,6 +39,13 @@ class RuleResult:
     sample_events: list[dict] = field(default_factory=list)
     status: str = "fail"     # pass | fail | error | skip
     error: str | None = None
+    # ── Purple-team loop: correlation + benign-baseline FP scoring ──
+    # Populated only when the caller supplied a benign corpus or a run_id /
+    # time window. Default values keep historical callers/serializers stable.
+    fp_hits: int = 0                # condition-level hits on the benign corpus
+    precision: float | None = None  # tp / (tp + fp); None when fp scoring not run
+    working: bool = False           # condition_match on attack AND fp_hits <= threshold
+    run_id: str | None = None       # the run_id the result was scoped to (loop only)
 
 
 # ── Sigma YAML helpers ────────────────────────────────────────────────────────

@@ -50,6 +50,68 @@ def _parse_ts(raw: Any) -> datetime | None:
         return None
 
 
+# ── Correlation helpers (run_id + time window) ───────────────────────────────
+
+
+def _extract_run_id(ev: dict) -> str | None:
+    """Pull a run_id from an event, tolerating ECS-nested and flat shapes.
+
+    Supported keys (in order):
+      labels.run_id   (ECS object form)
+      "labels.run_id" (flat/dotted form, sometimes how OpenSearch returns it)
+      run_id          (degenerate / pre-ECS shape)
+    """
+    labels = ev.get("labels")
+    if isinstance(labels, dict):
+        rid = labels.get("run_id")
+        if rid:
+            return str(rid)
+    rid = ev.get("labels.run_id")
+    if rid:
+        return str(rid)
+    rid = ev.get("run_id")
+    if rid:
+        return str(rid)
+    return None
+
+
+def _event_timestamp(ev: dict) -> datetime | None:
+    """Read @timestamp (ECS) or timestamp (legacy) from an event."""
+    return _parse_ts(ev.get("@timestamp") or ev.get("timestamp"))
+
+
+def correlate_events(
+    events: list[dict],
+    run_id: str | None,
+    window_start: datetime | None,
+    window_end: datetime | None,
+) -> list[dict]:
+    """Filter *events* to those tagged with *run_id* and inside the window.
+
+    When ``run_id`` is provided, an event without a matching ``labels.run_id``
+    is dropped even if its timestamp is inside the window. Both filters apply
+    independently — a hit outside the window is NOT a pass even if it carries
+    the right run_id, and vice versa.
+    """
+    if run_id is None and window_start is None and window_end is None:
+        return events
+    out: list[dict] = []
+    for ev in events:
+        if run_id is not None:
+            if _extract_run_id(ev) != run_id:
+                continue
+        if window_start is not None or window_end is not None:
+            ts = _event_timestamp(ev)
+            if ts is None:
+                continue
+            if window_start is not None and ts < window_start:
+                continue
+            if window_end is not None and ts > window_end:
+                continue
+        out.append(ev)
+    return out
+
+
 # ── Event loading ─────────────────────────────────────────────────────────────
 
 
@@ -156,7 +218,7 @@ def _eval_field_condition(field_raw: str, value: Any, event: dict) -> bool:
     field = parts[0].strip()
     modifier = parts[1].lower() if len(parts) > 1 else ""
 
-    # Case-insensitive field lookup
+    # Case-insensitive flat lookup
     ev_val = event.get(field)
     if ev_val is None:
         field_lower = field.lower()
@@ -164,6 +226,32 @@ def _eval_field_condition(field_raw: str, value: Any, event: dict) -> bool:
             if k.lower() == field_lower:
                 ev_val = v
                 break
+
+    # ECS dotted-path lookup: "process.executable" → event["process"]["executable"]
+    if ev_val is None and "." in field:
+        cursor: Any = event
+        for seg in field.split("."):
+            if isinstance(cursor, dict):
+                # case-insensitive segment lookup
+                if seg in cursor:
+                    cursor = cursor[seg]
+                else:
+                    seg_lower = seg.lower()
+                    found = False
+                    for k, v in cursor.items():
+                        if k.lower() == seg_lower:
+                            cursor = v
+                            found = True
+                            break
+                    if not found:
+                        cursor = None
+                        break
+            else:
+                cursor = None
+                break
+        if cursor is not None and not isinstance(cursor, (dict, list)):
+            ev_val = cursor
+
     if ev_val is None:
         return False
 
@@ -354,10 +442,53 @@ def _eval_sigma_corpus(
 # ── Main corpus matcher ───────────────────────────────────────────────────────
 
 
+def _count_condition_hits(raw_yaml: str, events: list[dict]) -> int:
+    """Count how many *events* satisfy the rule's field-level condition.
+
+    Used by benign-baseline FP scoring: we run the same translated query
+    against a known-good corpus and the count is the false-positive count.
+    Untranslatable rules count 0 — they would not be deployable to a SIEM,
+    so they cannot produce FPs in production either.
+    """
+    if not raw_yaml.strip():
+        return 0
+    try:
+        data = yaml.safe_load(raw_yaml)
+    except yaml.YAMLError:
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    detection = data.get("detection", {})
+    if not isinstance(detection, dict) or not detection:
+        return 0
+    condition_raw = str(detection.get("condition", "")).strip()
+    if not condition_raw:
+        return 0
+    groups: dict[str, dict] = {
+        name: val
+        for name, val in detection.items()
+        if name not in ("condition", "keywords") and isinstance(val, dict)
+    }
+    if not groups:
+        return 0
+    hits = 0
+    for ev in events:
+        v = _eval_condition_expr(condition_raw, groups, ev)
+        if v is True:
+            hits += 1
+    return hits
+
+
 def match_corpus(
     detections: list[Any],
     events_path: Path,
     since_hours: float = 24.0,
+    *,
+    run_id: str | None = None,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    benign_events_path: Path | None = None,
+    fp_threshold: int = 0,
 ) -> list[RuleResult]:
     """Match a list of CanonicalDetection objects against a local JSONL file.
 
@@ -369,9 +500,19 @@ def match_corpus(
       "no_match"         nothing matched → ValidationStatus.FAILED
       "skip"             rule unmatachable (no techniques/keywords/condition)
       "error"            JSONL file unreadable
-    """
-    from detection_validator.normalizer.schema import ValidationStatus
 
+    Correlation (run_id / window):
+      When ``run_id`` is set, events whose ``labels.run_id`` does not match
+      are dropped BEFORE evaluation — a hit outside the run does not count.
+      When ``window_start`` / ``window_end`` are set, events outside the
+      window are dropped likewise. Both filters apply independently.
+
+    FP scoring (benign_events_path):
+      For each rule, the same field-level condition is re-evaluated against
+      the benign corpus; the count populates ``fp_hits``. ``precision`` is
+      tp/(tp+fp). ``working`` is True only when:
+        status == 'condition_match'  AND  fp_hits <= fp_threshold
+    """
     since_dt: datetime | None = None
     if since_hours > 0:
         since_dt = datetime.fromtimestamp(
@@ -390,6 +531,69 @@ def match_corpus(
             )
             for d in detections
         ]
+
+    # Run-correlation filter applies after time-since filter.
+    events = correlate_events(events, run_id, window_start, window_end)
+
+    benign_events: list[dict] = []
+    if benign_events_path is not None:
+        try:
+            benign_events = load_events(Path(benign_events_path), since_dt=None)
+        except OSError as exc:
+            return [
+                RuleResult(
+                    rule_id=str(d.id), name=d.name,
+                    techniques=[], siem="local",
+                    query_desc="", hit_count=0,
+                    status="error", error=f"benign corpus unreadable: {exc}",
+                )
+                for d in detections
+            ]
+
+    return _match_corpus_inner(
+        detections, events,
+        since_dt=since_dt,
+        benign_events=benign_events,
+        fp_threshold=fp_threshold,
+        run_id=run_id,
+    )
+
+
+def match_corpus_correlated(
+    detections: list[Any],
+    events: list[dict],
+    *,
+    run_id: str | None = None,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    benign_events: list[dict] | None = None,
+    fp_threshold: int = 0,
+) -> list[RuleResult]:
+    """In-memory variant of :func:`match_corpus` used by ``dv loop`` and tests.
+
+    Takes events as a list (no file I/O), applies run_id+window correlation,
+    then runs the standard three-tier matcher with optional FP scoring.
+    """
+    events = correlate_events(events, run_id, window_start, window_end)
+    return _match_corpus_inner(
+        detections, events,
+        since_dt=None,
+        benign_events=list(benign_events or []),
+        fp_threshold=fp_threshold,
+        run_id=run_id,
+    )
+
+
+def _match_corpus_inner(
+    detections: list[Any],
+    events: list[dict],
+    *,
+    since_dt: datetime | None,
+    benign_events: list[dict],
+    fp_threshold: int,
+    run_id: str | None,
+) -> list[RuleResult]:
+    from detection_validator.normalizer.schema import ValidationStatus
 
     results: list[RuleResult] = []
 
@@ -494,5 +698,32 @@ def match_corpus(
             hit_count=0, sample_events=[],
             status="no_match",
         ))
+
+    # ── Post-pass: tag results with run_id and (optionally) FP score ─────────
+    fp_scoring = len(benign_events) > 0
+    for detection, result in zip(detections, results):
+        if run_id is not None:
+            result.run_id = run_id
+        if not fp_scoring:
+            continue
+        # Recover the rule's raw Sigma YAML so we can re-run the condition
+        # against the benign corpus. If there is no parseable detection block,
+        # FP scoring is meaningless — leave fp_hits=0 and precision=None.
+        raw_yaml = ""
+        if detection.detection_logic and detection.detection_logic.raw:
+            raw_yaml = detection.detection_logic.raw
+        if not raw_yaml.strip():
+            continue
+        fp = _count_condition_hits(raw_yaml, benign_events)
+        # tp here means "true positive on the run we just measured":
+        # only a condition_match against attack telemetry is a real TP.
+        # technique_only / keyword_only / no_match do NOT count as TPs.
+        tp = result.hit_count if result.status == "condition_match" else 0
+        result.fp_hits = fp
+        if (tp + fp) > 0:
+            result.precision = tp / (tp + fp)
+        else:
+            result.precision = None
+        result.working = (result.status == "condition_match") and (fp <= fp_threshold)
 
     return results
